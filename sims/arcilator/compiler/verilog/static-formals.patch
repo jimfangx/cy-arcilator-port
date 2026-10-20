@@ -1,0 +1,288 @@
+--- a/CaptureAnalysis.cpp
++++ b/CaptureAnalysis.cpp
+@@ -23,7 +23,9 @@
+ /// variable is local.
+ static bool isLocalToFunction(const ValueSymbol &var,
+                               const SubroutineSymbol &func) {
+-  if (var.kind == SymbolKind::Variable &&
++  if ((var.kind == SymbolKind::Variable ||
++       (var.kind == SymbolKind::FormalArgument &&
++        var.as<FormalArgumentSymbol>().direction != ArgumentDirection::Ref)) &&
+       var.as<VariableSymbol>().lifetime == VariableLifetime::Static)
+     return false;
+   for (const Scope *scope = var.getParentScope(); scope;
+@@ -70,7 +72,10 @@
+        scope = scope->asSymbol().getParentScope()) {
+     switch (scope->asSymbol().kind) {
+     case SymbolKind::Subroutine:
+-      if (var.kind == SymbolKind::Variable &&
++      if ((var.kind == SymbolKind::Variable ||
++           (var.kind == SymbolKind::FormalArgument &&
++            var.as<FormalArgumentSymbol>().direction !=
++                ArgumentDirection::Ref)) &&
+           var.as<VariableSymbol>().lifetime == VariableLifetime::Static)
+         continue;
+       return false;
+@@ -147,6 +152,11 @@
+   /// recurse into its members and body statements.
+   void handle(const SubroutineSymbol &func) {
+     llvm::SaveAndRestore guard(currentFunc, &func);
++    if (!func.flags.has(MethodFlags::DPIImport))
++      for (auto *arg : func.getArguments())
++        if (arg->lifetime == VariableLifetime::Static &&
++            arg->direction != ArgumentDirection::Ref && !isGlobalVariable(*arg))
++          capturedVars[&func].insert(arg);
+     visitDefault(func);
+   }
+ 
+--- a/Structure.cpp
++++ b/Structure.cpp
+@@ -338,6 +338,10 @@
+   void handle(const slang::ast::SubroutineSymbol &fn) {
+     if (fn.flags.has(slang::ast::MethodFlags::DPIImport))
+       return;
++    for (auto *arg : fn.getArguments())
++      if (arg->lifetime == slang::ast::VariableLifetime::Static &&
++          arg->direction != slang::ast::ArgumentDirection::Ref)
++        variables.insert(arg);
+     visitDefault(fn);
+   }
+   void handle(const slang::ast::VariableDeclStatement &stmt) {
+@@ -376,6 +380,8 @@
+   }
+   if (!global)
+     for (auto *var : declared) {
++      // A formal's default argument is evaluated by the caller, not at time0.
++      if (var->kind != slang::ast::SymbolKind::FormalArgument)
+       if (auto *init = var->getInitializer()) {
+         auto ref = context.valueSymbols.lookup(var);
+         auto value = context.convertRvalueExpression(
+@@ -2389,12 +2395,15 @@
+ // Preserve the actual shape of an open-array call without converting it into
+ // an untyped dynamic pointer. The native bridge still exposes an open handle
+ // to C; native_open_actual records only its SV value transport representation.
+-moore::DPIFuncOp Context::specializeOpenDPI(
+-    moore::DPIFuncOp original, const slang::ast::SubroutineSymbol &subroutine,
++moore::DPIFuncOp
++Context::specializeOpenDPI(moore::DPIFuncOp original,
++                           const slang::ast::SubroutineSymbol &subroutine,
+     ArrayRef<const slang::ast::Type *> actualTypes) {
+   auto signature = getDPISignature(*this, subroutine);
+-  if (failed(signature)) return {};
+-  auto imports = intoModuleOp->getAttrOfType<DictionaryAttr>("chipyard.dpi_imports");
++  if (failed(signature))
++    return {};
++  auto imports =
++      intoModuleOp->getAttrOfType<DictionaryAttr>("chipyard.dpi_imports");
+   auto entry = imports.getAs<DictionaryAttr>(original.getSymName());
+   SmallVector<Attribute> abi(entry.getAs<ArrayAttr>("abi").getValue());
+   bool changed = false;
+@@ -2404,7 +2413,8 @@
+     const auto &f = formal.getCanonicalType(), &a = actual.getCanonicalType();
+     if (auto *open = f.as_if<DPIOpenArrayType>()) {
+       auto *fixed = a.as_if<FixedSizeUnpackedArrayType>();
+-      return !open->isPacked && fixed && self(self, open->elementType, fixed->elementType);
++      return !open->isPacked && fixed &&
++             self(self, open->elementType, fixed->elementType);
+     }
+     if (auto *fixed = f.as_if<FixedSizeUnpackedArrayType>()) {
+       auto *other = a.as_if<FixedSizeUnpackedArrayType>();
+@@ -2414,34 +2424,41 @@
+     return f.isMatching(a);
+   };
+   for (auto [i, arg] : llvm::enumerate(subroutine.getArguments())) {
+-    if (actualTypes[i] == &arg->getType()) continue;
++    if (actualTypes[i] == &arg->getType())
++      continue;
+     if (!compatible(compatible, arg->getType(), *actualTypes[i])) {
+       mlir::emitError(convertLocation(arg->location),
+-                      "native open DPI requires compatible fixed unpacked actual dimensions");
++                      "native open DPI requires compatible fixed unpacked "
++                      "actual dimensions");
+       return {};
+     }
+     auto type = convertType(*actualTypes[i]);
+-    if (!type) return {};
++    if (!type)
++      return {};
+     (*signature)[i].type = type;
+     NamedAttrList info(cast<DictionaryAttr>(abi[i]));
+     info.set("native_open_actual", describeDPIType(*this, *actualTypes[i]));
+     abi[i] = info.getDictionary(getContext());
+     changed = true;
+   }
+-  if (!changed) return original;
++  if (!changed)
++    return original;
+   OpBuilder::InsertionGuard guard(builder);
+   builder.setInsertionPointAfter(original);
+   auto specialized = moore::DPIFuncOp::create(
+       builder, original.getLoc(),
+       builder.getStringAttr(original.getSymName().str() + "_open_actual"),
+-      *signature, ArrayAttr{}, original->getAttrOfType<StringAttr>("verilogName"));
+-  SymbolTable::setSymbolVisibility(specialized, SymbolTable::Visibility::Private);
++      *signature, ArrayAttr{},
++      original->getAttrOfType<StringAttr>("verilogName"));
++  SymbolTable::setSymbolVisibility(specialized,
++                                   SymbolTable::Visibility::Private);
+   symbolTable.insert(specialized);
+   NamedAttrList metadata(entry);
+   metadata.set("abi", builder.getArrayAttr(abi));
+   NamedAttrList updated(imports);
+   updated.set(specialized.getSymName(), metadata.getDictionary(getContext()));
+-  intoModuleOp->setAttr("chipyard.dpi_imports", updated.getDictionary(getContext()));
++  intoModuleOp->setAttr("chipyard.dpi_imports",
++                        updated.getDictionary(getContext()));
+   return specialized;
+ }
+ 
+@@ -2566,10 +2583,12 @@
+   // Moore-to-Core rebuilds declarations. Preserve original ABI provenance
+   // under the final uniqued symbol, including late hierarchical declarations.
+   if (auto dpi = dyn_cast<moore::DPIFuncOp>(insertedOp)) {
+-    NamedAttrList imports(intoModuleOp->getAttrOfType<DictionaryAttr>(
+-        "chipyard.dpi_imports"));
+-    imports.set(dpi.getSymName(), describeDPIImport(
+-        *this, subroutine, dpi->getAttrOfType<StringAttr>("verilogName")));
++    NamedAttrList imports(
++        intoModuleOp->getAttrOfType<DictionaryAttr>("chipyard.dpi_imports"));
++    imports.set(
++        dpi.getSymName(),
++        describeDPIImport(*this, subroutine,
++                          dpi->getAttrOfType<StringAttr>("verilogName")));
+     intoModuleOp->setAttr("chipyard.dpi_imports",
+                          imports.getDictionary(getContext()));
+   }
+@@ -2625,6 +2644,9 @@
+ 
+   // Create a function body block and populate it with block arguments.
+   SmallVector<moore::VariableOp> argVariables;
++  SmallVector<std::pair<const slang::ast::FormalArgumentSymbol *, Value>>
++      staticArguments;
++  SmallVector<std::pair<Value, Value>> staticCopyOut;
+   auto &block = lowering->op.getFunctionBody().emplaceBlock();
+ 
+   // If this is a class method, the first input is %this :
+@@ -2652,7 +2674,12 @@
+     auto loc = convertLocation(astArg->location);
+     auto blockArg = block.addArgument(type, loc);
+ 
+-    if (isa<moore::RefType>(type)) {
++    bool isStatic = astArg->lifetime == slang::ast::VariableLifetime::Static &&
++                    astArg->direction != slang::ast::ArgumentDirection::Ref;
++    if (isStatic) {
++      // Resolve the captured/global persistent slot after adding captures.
++      staticArguments.emplace_back(astArg, blockArg);
++    } else if (isa<moore::RefType>(type)) {
+       valueSymbols.insert(astArg, blockArg);
+     } else {
+       OpBuilder::InsertionGuard g(builder);
+@@ -2666,6 +2693,7 @@
+     }
+ 
+     const auto &argCanon = astArg->getType().getCanonicalType();
++    if (!isStatic)
+     if (const auto *vi = argCanon.as_if<slang::ast::VirtualInterfaceType>())
+       if (failed(registerVirtualInterfaceMembers(*astArg, *vi, loc)))
+         return failure();
+@@ -2702,6 +2730,31 @@
+     valueSymbols.insert(sym, blockArg);
+   }
+ 
++  // Static value formals have persistent module/package storage. Copy inputs
++  // at call entry and outputs at every return; never reset output-only slots.
++  for (auto [arg, input] : staticArguments) {
++    auto loc = convertLocation(arg->location);
++    Value ref = valueSymbols.lookup(arg);
++    if (!ref)
++      if (auto global = globalVariables.lookup(arg))
++        ref = moore::GetGlobalVariableOp::create(builder, loc, global);
++    if (!ref || !isa<moore::RefType>(ref.getType()))
++      return mlir::emitError(loc, "missing static formal storage");
++    valueSymbols.insert(arg, ref);
++    if (arg->direction != slang::ast::ArgumentDirection::Out) {
++      Value value = input;
++      if (isa<moore::RefType>(input.getType()))
++        value = moore::ReadOp::create(builder, loc, input);
++      moore::BlockingAssignOp::create(builder, loc, ref, value);
++    }
++    if (arg->direction != slang::ast::ArgumentDirection::In)
++      staticCopyOut.emplace_back(input, ref);
++    const auto &canon = arg->getType().getCanonicalType();
++    if (const auto *vi = canon.as_if<slang::ast::VirtualInterfaceType>())
++      if (failed(registerVirtualInterfaceMembers(*arg, *vi, loc)))
++        return failure();
++  }
++
+   auto savedThis = currentThisRef;
+   currentThisRef = valueSymbols.lookup(subroutine.thisVar);
+   llvm::scope_exit restoreThis([&] { currentThisRef = savedThis; });
+@@ -2728,6 +2781,17 @@
+                                    ValueRange{});
+     }
+   }
++  if (!staticCopyOut.empty())
++    lowering->op->walk([&](Operation *op) {
++      if (!isa<mlir::func::ReturnOp, moore::ReturnOp>(op))
++        return;
++      OpBuilder::InsertionGuard guard(builder);
++      builder.setInsertionPoint(op);
++      for (auto [output, ref] : staticCopyOut) {
++        auto value = moore::ReadOp::create(builder, op->getLoc(), ref);
++        moore::BlockingAssignOp::create(builder, op->getLoc(), output, value);
++      }
++    });
+   if (returnVar && returnVar.use_empty())
+     returnVar.getDefiningOp()->erase();
+ 
+@@ -3933,7 +3997,8 @@
+   // If the variable has an initializer expression, remember it for later such
+   // that we can convert the initializers once we have seen all global
+   // variables.
+-  if (var.getInitializer())
++  if (var.kind != slang::ast::SymbolKind::FormalArgument &&
++      var.getInitializer())
+     globalVariableWorklist.push_back(&var);
+ 
+   return success();
+--- a/HierarchicalNames.cpp
++++ b/HierarchicalNames.cpp
+@@ -49,6 +49,11 @@
+     auto *outermostInstBody =
+         outermostModule.as_if<slang::ast::InstanceBodySymbol>();
+ 
++    // Compilation-unit/package variables have shared global storage, so they
++    // do not cross an instance boundary or acquire a hierarchy port.
++    if (!currentInstBody)
++      return;
++
+     // Like module Foo; int a; Foo.a; endmodule.
+     // Ignore "Foo.a" invoked by this module itself.
+     if (currentInstBody == outermostInstBody)
+--- a/Expressions.cpp
++++ b/Expressions.cpp
+@@ -1057,6 +1057,14 @@
+       return value;
+     }
+ 
++    if (auto global = context.globalVariables.lookup(&expr.symbol)) {
++      auto ref = moore::GetGlobalVariableOp::create(builder, hierLoc, global);
++      auto read = moore::ReadOp::create(builder, hierLoc, ref);
++      if (context.rvalueReadCallback)
++        context.rvalueReadCallback(read);
++      return read.getResult();
++    }
++
+     // For cross-instance hierarchical references, prefer the isntance-aware
+     // hierValueSymbols lookup. Sibling instances elaborate distinct symbol
+     // objects for the same logical variable, and this map keeps p1 vs p2
+@@ -2762,6 +2770,9 @@
+     if (auto value = context.resolveCapturedValue(expr.symbol))
+       return value;
+ 
++    if (auto global = context.globalVariables.lookup(&expr.symbol))
++      return moore::GetGlobalVariableOp::create(builder, loc, global);
++
+     // For cross-instance hierarchical references, use the instance-aware
+     // hierValueSymbols lookup (same priority and rationale as rvalue
+     // visitor).

@@ -1,0 +1,65 @@
+#ifdef ARC_CORE_MODEL
+ARC_CORE_MODEL(AsyncBank, "ArcAsyncRegBank")
+ARC_CORE_MODEL(SparseMemory, "ArcSparseMemory")
+ARC_CORE_MODEL(SignalState, "ArcSignalState")
+ARC_CORE_MODEL(Delay, "ArcDelay")
+ARC_CORE_MODEL(SignalMemory, "ArcSignalMemory")
+ARC_CORE_MODEL(Latch, "ArcLatch")
+ARC_CORE_MODEL(FeedbackWire, "ArcFeedbackWire")
+ARC_CORE_MODEL(WideShift, "ArcWideShift")
+ARC_CORE_MODEL(ClockSource, "ClockSourceAtFreqMHz")
+ARC_CORE_MODEL(ClockSource, "ClockSourceAtFreqFromPlusArg")
+ARC_CORE_MODEL(ClockFlop, "ClockFlop")
+ARC_CORE_MODEL(Combinational, "plusarg_reader")
+ARC_CORE_MODEL(Combinational, "EICG_wrapper")
+ARC_CORE_MODEL(Combinational, "GenericDigitalInIOCell")
+ARC_CORE_MODEL(Combinational, "GenericDigitalOutIOCell")
+ARC_CORE_MODEL(Combinational, "ClockInverter")
+ARC_CORE_MODEL(Combinational, "ClockOr2")
+ARC_CORE_MODEL(Combinational, "ClockSignalNor2")
+ARC_CORE_MODEL(TSI, "SimTSI")
+ARC_CORE_MODEL(UART, "SimUART")
+ARC_CORE_MODEL(DRAM, "SimDRAM")
+ARC_CORE_MODEL(JTAG, "SimJTAG")
+#endif
+#ifdef ARC_CONTEXT_MODEL
+ARC_CONTEXT_MODEL(ContextRoot, "ArcDpiScopeRoot")
+ARC_CONTEXT_MODEL(ContextScope, "ArcDpiScope")
+#endif
+#ifdef ARC_PERIPHERAL_MODEL
+ARC_PERIPHERAL_MODEL(DTM, "TestchipSimDTM")
+ARC_PERIPHERAL_MODEL(DTM, "SimDTM")
+ARC_PERIPHERAL_MODEL(BlockDevice, "SimBlockDevice")
+ARC_PERIPHERAL_MODEL(Network, "SimNetwork")
+ARC_PERIPHERAL_MODEL(BranchPredictor, "BranchPredictorHarness")
+ARC_PERIPHERAL_MODEL(BTB, "BTBHarness")
+ARC_PERIPHERAL_MODEL(TraceROM, "TraceROM")
+#endif
+#ifdef ARC_COSIM_MODEL
+ARC_COSIM_MODEL(Cosim, "SpikeCosim")
+ARC_COSIM_MODEL(Cosim, "SpikeCosimRegisterMemory")
+ARC_COSIM_MODEL(Cosim, "SpikeCosimRegisterDevice")
+ARC_COSIM_MODEL(Cosim, "SpikeCosimRegisterCSR")
+ARC_COSIM_MODEL(Cosim, "SpikeCosimTargetParams")
+ARC_COSIM_MODEL(DebugROB, "DebugROBPushTrace")
+ARC_COSIM_MODEL(DebugROB, "DebugROBPushWb")
+ARC_COSIM_MODEL(DebugROB, "DebugROBPopTrace")
+ARC_COSIM_MODEL(Traffic, "TrafficEvalIngress")
+ARC_COSIM_MODEL(Traffic, "TrafficEvalEgress")
+#endif
+#ifdef ARC_SPIKE_MODEL
+ARC_SPIKE_MODEL(Spike, "SpikeBlackBox")
+#endif
+#ifdef ARC_ANALOG_MODEL
+ARC_ANALOG_MODEL(DigitalGPIO, "AnalogConst")
+ARC_ANALOG_MODEL(DigitalGPIO, "GenericDigitalGPIOCell")
+ARC_ANALOG_MODEL(SPIFlash, "SimSPIFlashModel")
+#endif
+#ifdef ARC_ADDITIONAL_MODEL
+ARC_ADDITIONAL_MODEL(LegacyDTM, "ArcLegacySimDTM")
+ARC_ADDITIONAL_MODEL(Dromajo, "SimDromajoCosimBlackBox")
+ARC_ADDITIONAL_MODEL(MemoryTrace, "SimMemTrace")
+ARC_ADDITIONAL_MODEL(MemoryLogger, "SimMemTraceLogger")
+ARC_ADDITIONAL_MODEL(LaneDriver, "SimEmulator")
+ARC_ADDITIONAL_MODEL(LaneDriver, "SimMemFuzzer")
+#endif

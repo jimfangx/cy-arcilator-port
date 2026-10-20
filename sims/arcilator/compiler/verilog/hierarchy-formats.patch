@@ -1,0 +1,232 @@
+--- a/ImportVerilogInternals.h
++++ b/ImportVerilogInternals.h
+@@ -500,7 +500,10 @@
+                                 Value clockVal);
+ 
+   /// Evaluate the constant value of an expression.
+-  slang::ConstantValue evaluateConstant(const slang::ast::Expression &expr);
++  /// Runtime folding must retain observable system-task effects. Constant-only
++  /// contexts (such as replication counts) keep Slang's elaboration semantics.
++  slang::ConstantValue evaluateConstant(const slang::ast::Expression &expr,
++                                       bool preserveRuntimeEffects = false);
+ 
+   /// Convert the inside/set-membership expression.
+   Value convertInsideCheck(Value insideLhs, Location loc,
+@@ -667,6 +670,9 @@
+   /// Used to resolve the `%l`/`%L` library binding format specifier.
+   const slang::ast::DefinitionSymbol *currentDefinition = nullptr;
+ 
++  /// Lexical SV declaration scope used by hierarchical format specifiers.
++  const slang::ast::Symbol *currentFormatScope = nullptr;
++
+   /// Ensure that the global variables for `$monitor` state exist. This creates
+   /// the `__monitor_active_id` and `__monitor_enabled` globals on first call.
+   void ensureMonitorGlobals();
+--- a/Structure.cpp
++++ b/Structure.cpp
+@@ -1039,6 +1039,9 @@
+   }
+ 
+   LogicalResult visit(const slang::ast::ProceduralBlockSymbol &procNode) {
++    auto *previousFormatScope = context.currentFormatScope;
++    context.currentFormatScope = &procNode.getParentScope()->asSymbol();
++    llvm::scope_exit formatScopeGuard([&] { context.currentFormatScope = previousFormatScope; });
+     // Slang wraps module-level concurrent assertions in a synthetic `always`
+     // procedure. The assertion is self-clocked, so it needs no process.
+     if (auto *syntax = procNode.getSyntax();
+@@ -1808,6 +1811,9 @@
+ 
+ LogicalResult
+ Context::convertModuleBody(const slang::ast::InstanceBodySymbol *module) {
++  auto *previousFormatScope = currentFormatScope;
++  currentFormatScope = module;
++  llvm::scope_exit formatScopeGuard([&] { currentFormatScope = previousFormatScope; });
+   auto &lowering = *modules[module];
+   auto prevDefinition = currentDefinition;
+   currentDefinition = &module->getDefinition();
+@@ -2606,6 +2612,9 @@
+ /// available for calls within the body.
+ LogicalResult
+ Context::defineFunction(const slang::ast::SubroutineSymbol &subroutine) {
++  auto *previousFormatScope = currentFormatScope;
++  currentFormatScope = &subroutine;
++  llvm::scope_exit formatScopeGuard([&] { currentFormatScope = previousFormatScope; });
+   auto *lowering = functions.at(&subroutine).get();
+ 
+   // Keep track of the local time scale. `getTimeScale` automatically looks
+--- a/Statements.cpp
++++ b/Statements.cpp
+@@ -17,6 +17,7 @@
+ #include "slang/ast/Statement.h"
+ #include "slang/ast/SystemSubroutine.h"
+ #include "slang/ast/expressions/MiscExpressions.h"
++#include "slang/ast/symbols/BlockSymbols.h"
+ #include "slang/ast/symbols/CompilationUnitSymbols.h"
+ #include "slang/ast/symbols/InstanceSymbols.h"
+ #include "llvm/ADT/ScopeExit.h"
+@@ -279,6 +280,9 @@
+   // their contents extracted directly, however fork-join blocks require special
+   // handling.
+   LogicalResult visit(const slang::ast::BlockStatement &stmt) {
++    auto *previousFormatScope = context.currentFormatScope;
++    if (stmt.blockSymbol) context.currentFormatScope = stmt.blockSymbol;
++    llvm::scope_exit formatScopeGuard([&] { context.currentFormatScope = previousFormatScope; });
+     moore::JoinKind kind;
+     switch (stmt.blockKind) {
+     case slang::ast::StatementBlockKind::Sequential:
+@@ -539,7 +543,7 @@
+           // Dynamic item expressions retain their original evaluation order.
+           Value value;
+           if (expr->type->isIntegral()) {
+-            auto constant = context.evaluateConstant(*expr);
++            auto constant = context.evaluateConstant(*expr, true);
+             value = context.materializeConstant(constant, *expr->type, itemLoc);
+           }
+           if (!value)
+--- a/FormatStrings.cpp
++++ b/FormatStrings.cpp
+@@ -8,6 +8,7 @@
+ 
+ #include "ImportVerilogInternals.h"
+ #include "slang/ast/SFormat.h"
++#include "slang/ast/Symbol.h"
+ 
+ using namespace mlir;
+ using namespace circt;
+@@ -107,8 +108,12 @@
+     // %m/%M prints the hierarchical path of the module instance.
+     if (specifierLower == 'm') {
+       bool useEscapes = std::isupper(specifier);
+-      fragments.push_back(
+-          moore::FormatHierPathOp::create(builder, loc, useEscapes));
++      if (!context.currentFormatScope)
++        return mlir::emitError(loc, "hierarchy formatter has no lexical SV scope");
++      auto value = moore::FormatHierPathOp::create(builder, loc, useEscapes);
++      value->setAttr("chipyard.sv_format_scope", builder.getStringAttr(
++          context.currentFormatScope->getHierarchicalPath()));
++      fragments.push_back(value);
+       return success();
+     }
+ 
+--- a/MooreToCore.cpp
++++ b/MooreToCore.cpp
+@@ -2710,8 +2710,11 @@
+   LogicalResult
+   matchAndRewrite(FormatHierPathOp op, OpAdaptor adaptor,
+                   ConversionPatternRewriter &rewriter) const override {
+-    rewriter.replaceOpWithNewOp<sim::FormatHierPathOp>(op,
+-                                                       adaptor.getUseEscapes());
++    auto scope = op->getAttr("chipyard.sv_format_scope");
++    auto replacement = rewriter.replaceOpWithNewOp<sim::FormatHierPathOp>(
++        op, adaptor.getUseEscapes());
++    if (scope)
++      replacement->setAttr("chipyard.sv_format_scope", scope);
+     return success();
+   }
+ };
+--- a/Expressions.cpp
++++ b/Expressions.cpp
+@@ -13,11 +13,13 @@
+ #include "circt/Support/FVInt.h"
+ #include "mlir/IR/Operation.h"
+ #include "mlir/IR/Value.h"
++#include "slang/ast/ASTVisitor.h"
+ #include "slang/ast/EvalContext.h"
+ #include "slang/ast/SystemSubroutine.h"
+ #include "slang/ast/types/AllTypes.h"
+ #include "slang/syntax/AllSyntax.h"
+ #include "llvm/ADT/ScopeExit.h"
++#include "llvm/ADT/SmallPtrSet.h"
+ #include "llvm/ADT/StringExtras.h"
+ #include "llvm/Support/SaveAndRestore.h"
+ 
+@@ -991,7 +993,7 @@
+     }
+ 
+     // Try to materialize constant values directly.
+-    auto constant = context.evaluateConstant(expr);
++    auto constant = context.evaluateConstant(expr, true);
+     if (auto value = context.materializeConstant(constant, *expr.type, loc))
+       return value;
+ 
+@@ -1122,7 +1124,7 @@
+           expr.sourceRange);
+       break;
+     default:
+-      constant = context.evaluateConstant(expr);
++      constant = context.evaluateConstant(expr, true);
+       break;
+     }
+     if (auto value = context.materializeConstant(constant, *expr.type, loc))
+@@ -1630,7 +1632,7 @@
+                           expr.op == slang::ast::BinaryOperator::CaseInequality;
+     auto convertOperand = [&](const slang::ast::Expression &operand) -> Value {
+       if (caseComparison && operand.type->isIntegral()) {
+-        auto constant = context.evaluateConstant(operand);
++        auto constant = context.evaluateConstant(operand, true);
+         if (auto value =
+                 context.materializeConstant(constant, *operand.type, loc))
+           return value;
+@@ -1911,7 +1913,7 @@
+   /// Handle calls.
+   Value visit(const slang::ast::CallExpression &expr) {
+     // Try to materialize constant values directly.
+-    auto constant = context.evaluateConstant(expr);
++    auto constant = context.evaluateConstant(expr, true);
+     if (auto value = context.materializeConstant(constant, *expr.type, loc))
+       return value;
+ 
+@@ -3099,8 +3101,52 @@
+   return {};
+ }
+ 
++namespace {
++/// Slang permits system tasks in constant-function evaluation and discards
++/// their effects. Runtime folding must retain those calls, including calls
++/// reached through another function or an enclosing constant expression.
++struct RuntimeTaskScanner
++    : slang::ast::ASTVisitor<RuntimeTaskScanner,
++                             slang::ast::VisitFlags::AllGood> {
++  llvm::SmallPtrSet<const slang::ast::SubroutineSymbol *, 8> visited;
++  bool found = false;
++
++  void handle(const slang::ast::CallExpression &call) {
++    if (found)
++      return;
++    call.visitExprsNoArgs(*this);
++    if (call.isSystemCall()) {
++      const auto &system = *std::get<1>(call.subroutine).subroutine;
++      if (system.kind == slang::ast::SubroutineKind::Task) {
++        found = true;
++        return;
++      }
++      // Type queries such as $bits do not execute their argument expressions.
++      for (auto [index, arg] : llvm::enumerate(call.arguments()))
++        if (!system.isArgUnevaluated(index))
++          arg->visit(*this);
++      return;
++    }
++    for (auto *arg : call.arguments())
++      arg->visit(*this);
++    const auto *subroutine = std::get<0>(call.subroutine);
++    if (!found && !subroutine->flags.has(slang::ast::MethodFlags::DPIImport) &&
++        visited.insert(subroutine).second)
++      subroutine->getBody().visit(*this);
++  }
++};
++} // namespace
++
+ slang::ConstantValue
+-Context::evaluateConstant(const slang::ast::Expression &expr) {
++Context::evaluateConstant(const slang::ast::Expression &expr,
++                          bool preserveRuntimeEffects) {
++  if (preserveRuntimeEffects) {
++    RuntimeTaskScanner scanner;
++    expr.visit(scanner);
++    if (scanner.found)
++      return {};
++  }
++
+   using slang::ast::EvalFlags;
+   slang::ast::EvalContext evalContext(
+       slang::ast::ASTContext(compilation.getRoot(),

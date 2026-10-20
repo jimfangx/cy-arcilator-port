@@ -1,0 +1,11 @@
+--- a/MooreToCore.cpp
++++ b/MooreToCore.cpp
+@@ -619,6 +619,8 @@
+     newOp.setSymVisibilityAttr(op.getSymVisibilityAttr());
+     if (auto dpiExport = op->getAttr("circt.dpi.export"))
+       newOp->setAttr("circt.dpi.export", dpiExport);
++    if (auto metadata = op->getAttr("chipyard.dpi_export"))
++      newOp->setAttr("chipyard.dpi_export", metadata);
+     rewriter.inlineRegionBefore(op.getBody(), newOp.getBody(),
+                                 newOp.getBody().end());
+     if (failed(rewriter.convertRegionTypes(&newOp.getBody(), *typeConverter,

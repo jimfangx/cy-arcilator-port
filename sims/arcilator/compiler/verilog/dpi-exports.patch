@@ -1,0 +1,119 @@
+--- a/Structure.cpp
++++ b/Structure.cpp
+@@ -2009,6 +2009,71 @@
+     outputs.push_back(hierValue);
+   }
+ 
++  for (auto &[subroutine, function] : functions) {
++    if (!function->op->hasAttr(dpiExportAttrName))
++      continue;
++    auto *owner = subroutine->getParentScope();
++    while (owner &&
++           owner->asSymbol().kind != slang::ast::SymbolKind::InstanceBody)
++      owner = owner->asSymbol().getParentScope();
++    if (!owner || &owner->asSymbol() != module)
++      continue;
++    auto name = SymbolTable::getSymbolName(function->op);
++    auto record = [&](Value ref, int64_t index, StringAttr storageName) {
++      auto *storage = ref.getDefiningOp();
++      SmallVector<Attribute> captures;
++      if (auto previous =
++              storage->getAttrOfType<ArrayAttr>("chipyard.dpi_captures"))
++        llvm::append_range(captures, previous);
++      if (captures.empty()) {
++        // The opaque reference escape pins even storage used only by C.
++        mlir::func::FuncOp anchor;
++        {
++          OpBuilder::InsertionGuard guard(builder);
++          builder.setInsertionPointToStart(intoModuleOp.getBody());
++          anchor = mlir::func::FuncOp::create(
++              builder, ref.getLoc(), "__chipyard_dpi_capture",
++              builder.getFunctionType({ref.getType()}, {}));
++          anchor.setPrivate();
++          anchor->setAttr("chipyard.dpi_capture_anchor", builder.getUnitAttr());
++          symbolTable.insert(anchor);
++        }
++        mlir::func::CallOp::create(builder, ref.getLoc(), anchor,
++                                   ValueRange{ref});
++      }
++      captures.push_back(builder.getDictionaryAttr(
++          {builder.getNamedAttr("function", FlatSymbolRefAttr::get(name)),
++           builder.getNamedAttr("capture", builder.getI64IntegerAttr(index)),
++           builder.getNamedAttr("instance", builder.getStringAttr(
++                                                module->getHierarchicalPath())),
++           builder.getNamedAttr(
++               "scope", builder.getStringAttr(subroutine->getParentScope()
++                                                  ->asSymbol()
++                                                  .getHierarchicalPath())),
++           builder.getNamedAttr("storage", storageName)}));
++      storage->setAttr("chipyard.dpi_captures", builder.getArrayAttr(captures));
++    };
++    // A scope marker keeps an instance registration even for stateless exports.
++    // It is deliberately absent from the callable's captured argument list.
++    auto loc = function->op->getLoc();
++    auto markerType = moore::IntType::getInt(getContext(), 1);
++    Value zero = moore::ConstantOp::create(builder, loc, markerType, 0);
++    auto markerName = builder.getStringAttr("__chipyard_export_scope_" +
++                                            name.getValue().str());
++    auto marker = moore::VariableOp::create(
++        builder, loc, moore::RefType::get(markerType), markerName, zero);
++    record(marker, -1, markerName);
++    for (auto [i, symbol] : llvm::enumerate(function->capturedSymbols)) {
++      auto ref = valueSymbols.lookup(symbol);
++      auto *storage = ref ? ref.getDefiningOp() : nullptr;
++      if (!storage || storage->getParentOp() != lowering.op)
++        continue;
++      auto storageName = storage->getAttrOfType<StringAttr>("name");
++      if (!storageName)
++        storageName = builder.getStringAttr(symbol->name);
++      record(ref, i, storageName);
++    }
++  }
+   moore::OutputOp::create(builder, lowering.op.getLoc(), outputs);
+   return success();
+ }
+@@ -2363,6 +2428,28 @@
+       op->setAttr(dpiExportAttrName,
+                   builder.getStringAttr(dpiExportIt->second));
+       SymbolTable::setSymbolVisibility(op, SymbolTable::Visibility::Public);
++      NamedAttrList metadata(describeDPIImport(
++          *this, subroutine, builder.getStringAttr(dpiExportIt->second)));
++      SmallVector<Attribute> captures;
++      if (capturesIt != functionCaptures.end())
++        for (auto [i, symbol] : llvm::enumerate(capturesIt->second)) {
++          NamedAttrList capture;
++          capture.set("argument", builder.getI64IntegerAttr(
++                                      extraParams.size() +
++                                      subroutine.getArguments().size() + i));
++          capture.set("name", builder.getStringAttr(symbol->name));
++          capture.set("source_path",
++                      builder.getStringAttr(symbol->getHierarchicalPath()));
++          capture.set("source_type",
++                      builder.getStringAttr(symbol->getType().toString()));
++          capture.set("width", builder.getI64IntegerAttr(
++                                   symbol->getType().getBitstreamWidth()));
++          captures.push_back(capture.getDictionary(getContext()));
++        }
++      metadata.set("captures", builder.getArrayAttr(captures));
++      metadata.set("formal_count",
++                   builder.getI64IntegerAttr(subroutine.getArguments().size()));
++      op->setAttr("chipyard.dpi_export", metadata.getDictionary(getContext()));
+       return;
+     }
+     SymbolTable::setSymbolVisibility(op, SymbolTable::Visibility::Private);
+--- a/MooreToCore.cpp
++++ b/MooreToCore.cpp
+@@ -1156,8 +1156,11 @@
+         return failure();
+     }
+ 
+-    rewriter.replaceOpWithNewOp<llhd::SignalOp>(op, resultType,
+-                                                op.getNameAttr(), init);
++    auto captures = op->getAttr("chipyard.dpi_captures");
++    auto signal = rewriter.replaceOpWithNewOp<llhd::SignalOp>(
++        op, resultType, op.getNameAttr(), init);
++    if (captures)
++      signal->setAttr("chipyard.dpi_captures", captures);
+     return success();
+   }
+ };

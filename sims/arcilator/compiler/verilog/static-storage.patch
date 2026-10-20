@@ -1,0 +1,240 @@
+--- a/CaptureAnalysis.cpp
++++ b/CaptureAnalysis.cpp
+@@ -7,8 +7,10 @@
+ //===----------------------------------------------------------------------===//
+ 
+ #include "CaptureAnalysis.h"
++#include "slang/ast/ASTVisitor.h"
+ #include "slang/ast/SystemSubroutine.h"
+-#include "slang/ast/ASTVisitor.h"
++#include "slang/ast/statements/MiscStatements.h"
++#include "slang/ast/symbols/SubroutineSymbols.h"
+ #include "llvm/ADT/MapVector.h"
+ #include "llvm/Support/SaveAndRestore.h"
+ 
+@@ -21,6 +23,9 @@
+ /// variable is local.
+ static bool isLocalToFunction(const ValueSymbol &var,
+                               const SubroutineSymbol &func) {
++  if (var.kind == SymbolKind::Variable &&
++      var.as<VariableSymbol>().lifetime == VariableLifetime::Static)
++    return false;
+   for (const Scope *scope = var.getParentScope(); scope;
+        scope = scope->asSymbol().getParentScope()) {
+     if (&scope->asSymbol() == &func)
+@@ -65,6 +70,10 @@
+        scope = scope->asSymbol().getParentScope()) {
+     switch (scope->asSymbol().kind) {
+     case SymbolKind::Subroutine:
++      if (var.kind == SymbolKind::Variable &&
++          var.as<VariableSymbol>().lifetime == VariableLifetime::Static)
++        continue;
++      return false;
+     case SymbolKind::InstanceBody:
+       return false;
+     default:
+@@ -141,6 +150,13 @@
+     visitDefault(func);
+   }
+ 
++  void handle(const VariableDeclStatement &stmt) {
++    if (currentFunc && stmt.symbol.lifetime == VariableLifetime::Static &&
++        !isGlobalVariable(stmt.symbol))
++      capturedVars[currentFunc].insert(&stmt.symbol);
++    visitDefault(stmt);
++  }
++
+   /// When we see a named value reference inside a function, check if it needs
+   /// to be captured.
+   void handle(const NamedValueExpression &expr) {
+@@ -192,9 +208,11 @@
+   /// Record call graph edges when we see a function call.
+   void handle(const CallExpression &expr) {
+     // Fixed-size type queries never evaluate or capture their operand.
+-    if (auto *system = std::get_if<CallExpression::SystemCallInfo>(&expr.subroutine);
++    if (auto *system =
++            std::get_if<CallExpression::SystemCallInfo>(&expr.subroutine);
+         system && system->subroutine->name == "$bits" &&
+-        !expr.arguments().empty() && expr.arguments().front()->type->isFixedSize())
++        !expr.arguments().empty() &&
++        expr.arguments().front()->type->isFixedSize())
+       return;
+ 
+     if (currentFunc)
+--- a/Statements.cpp
++++ b/Statements.cpp
+@@ -372,6 +372,13 @@
+   // Handle variable declarations.
+   LogicalResult visit(const slang::ast::VariableDeclStatement &stmt) {
+     const auto &var = stmt.symbol;
++    if (var.lifetime == slang::ast::VariableLifetime::Static) {
++      if (context.valueSymbols.lookup(&var) ||
++          context.globalVariables.lookup(&var))
++        return success();
++      return mlir::emitError(loc)
++             << "missing static local storage for " << var.name;
++    }
+     auto type = context.convertType(*var.getDeclaredType());
+     if (!type)
+       return failure();
+@@ -1793,8 +1800,7 @@
+   }
+ 
+   /// Emit an error for all other statements.
+-  template <typename T>
+-  LogicalResult visit(T &&stmt) {
++  template <typename T> LogicalResult visit(T &&stmt) {
+     mlir::emitError(loc, "unsupported statement: ")
+         << slang::ast::toString(stmt.kind);
+     return mlir::failure();
+--- a/Structure.cpp
++++ b/Structure.cpp
+@@ -9,8 +9,10 @@
+ #include "ImportVerilogInternals.h"
+ #include "circt/Support/FVInt.h"
+ #include "slang/ast/Compilation.h"
++#include "slang/ast/statements/MiscStatements.h"
+ #include "slang/ast/symbols/ClassSymbols.h"
+ #include "slang/ast/symbols/MemberSymbols.h"
++#include "slang/ast/symbols/SubroutineSymbols.h"
+ #include "slang/ast/types/AllTypes.h"
+ #include "slang/syntax/AllSyntax.h"
+ #include "slang/syntax/SyntaxVisitor.h"
+@@ -318,6 +320,77 @@
+ }
+ 
+ namespace {
++// Static procedural declarations belong to the enclosing instance (or package),
++// even when a function is automatic. Allocate them before lowering any body so
++// calls share storage and the local-variable SSA pass cannot erase their state.
++struct StaticLocalCollector
++    : public slang::ast::ASTVisitor<StaticLocalCollector,
++                                    slang::ast::VisitFlags::AllCanonical> {
++  const slang::ast::Symbol &owner;
++  llvm::SmallSetVector<const slang::ast::VariableSymbol *, 16> variables;
++  explicit StaticLocalCollector(const slang::ast::Symbol &owner)
++      : owner(owner) {}
++  void handle(const slang::ast::InstanceBodySymbol &body) {
++    if (&body == &owner)
++      visitDefault(body);
++  }
++  void handle(const slang::ast::ClassType &) {}
++  void handle(const slang::ast::SubroutineSymbol &fn) {
++    if (fn.flags.has(slang::ast::MethodFlags::DPIImport))
++      return;
++    visitDefault(fn);
++  }
++  void handle(const slang::ast::VariableDeclStatement &stmt) {
++    if (stmt.symbol.lifetime == slang::ast::VariableLifetime::Static)
++      variables.insert(&stmt.symbol);
++    visitDefault(stmt);
++  }
++};
++static LogicalResult declareStaticLocals(Context &context,
++                                         const slang::ast::Symbol &scope,
++                                         bool global = false) {
++  StaticLocalCollector collector(scope);
++  scope.visit(collector);
++  auto &b = context.builder;
++  // Initialize only fresh declarations: generated scopes can be visited again.
++  SmallVector<const slang::ast::VariableSymbol *> declared;
++  for (auto *var : collector.variables) {
++    if (global) {
++      if (!context.globalVariables.lookup(var) &&
++          failed(context.convertGlobalVariable(*var)))
++        return failure();
++      context.globalVariables.lookup(var).setPrivate();
++      continue;
++    }
++    if (context.valueSymbols.lookup(var))
++      continue;
++    auto ty = context.convertType(var->getType());
++    if (!ty)
++      return failure();
++    auto op = moore::VariableOp::create(
++        b, context.convertLocation(var->location),
++        moore::RefType::get(cast<moore::UnpackedType>(ty)),
++        b.getStringAttr(var->getHierarchicalPath()), Value{});
++    context.valueSymbols.insert(var, op);
++    declared.push_back(var);
++  }
++  if (!global)
++    for (auto *var : declared) {
++      if (auto *init = var->getInitializer()) {
++        auto ref = context.valueSymbols.lookup(var);
++        auto value = context.convertRvalueExpression(
++            *init, cast<moore::RefType>(ref.getType()).getNestedType());
++        if (!value)
++          return failure();
++        ref.getDefiningOp<moore::VariableOp>().getInitialMutable().assign(
++            value);
++      }
++    }
++  return success();
++}
++} // namespace
++
++namespace {
+ struct ModuleVisitor : public BaseVisitor {
+   using BaseVisitor::visit;
+ 
+@@ -340,12 +413,13 @@
+     if (!var || var->getInitializer())
+       return success();
+     auto ref = context.valueSymbols.lookup(var);
+-    auto variable = ref ? ref.getDefiningOp<moore::VariableOp>()
+-                        : moore::VariableOp{};
++    auto variable =
++        ref ? ref.getDefiningOp<moore::VariableOp>() : moore::VariableOp{};
+     if (!variable)
+       return mlir::emitError(loc, "missing output variable port storage");
+     auto type = cast<moore::RefType>(ref.getType()).getNestedType();
+-    auto initial = context.convertRvalueExpression(*port.getInitializer(), type);
++    auto initial =
++        context.convertRvalueExpression(*port.getInitializer(), type);
+     if (!initial)
+       return failure();
+     variable.getInitialMutable().assign(initial);
+@@ -467,6 +541,9 @@
+         recordMember(*port->internalSymbol, lvalue);
+       }
+     }
++
++    if (failed(declareStaticLocals(context, instNode.body)))
++      return failure();
+ 
+     // Lower executable interface body members now that all interface signals
+     // and port bindings are available in the scoped `valueSymbols` table.
+@@ -1318,6 +1395,9 @@
+     // later phases can bind port connections or hierarchical references to
+     // declarations that appear later in source.
+     if (failed(predeclareStorageScope(scope, blockNamePrefix)))
++      return failure();
++
++    if (failed(declareStaticLocals(context, scope.asSymbol())))
+       return failure();
+ 
+     // Then expand interface instances. Interface expansion may lower
+@@ -1947,6 +2027,8 @@
+   OpBuilder::InsertionGuard g(builder);
+   builder.setInsertionPointToEnd(intoModuleOp.getBody());
+   ValueSymbolScope scope(valueSymbols);
++  if (failed(declareStaticLocals(*this, package, true)))
++    return failure();
+   for (auto &member : package.members()) {
+     auto loc = convertLocation(member.location);
+     if (failed(member.visit(PackageVisitor(*this, loc))))
+@@ -2305,9 +2387,10 @@
+     // Moore-to-Core rebuilds DPI declarations and drops their custom attrs.
+     // Keep original SV ABI information on the enclosing module until the
+     // native RTL pass restores it onto each declaration and call site.
+-    NamedAttrList imports(intoModuleOp->getAttrOfType<DictionaryAttr>(
+-        "chipyard.dpi_imports"));
+-    imports.set(dpiOp.getSymName(), describeDPIImport(*this, subroutine, cNameAttr));
++    NamedAttrList imports(
++        intoModuleOp->getAttrOfType<DictionaryAttr>("chipyard.dpi_imports"));
++    imports.set(dpiOp.getSymName(),
++                describeDPIImport(*this, subroutine, cNameAttr));
+     intoModuleOp->setAttr("chipyard.dpi_imports",
+                           imports.getDictionary(getContext()));
+     setVisibilityAndExportAttr(dpiOp);

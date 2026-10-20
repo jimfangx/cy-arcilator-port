@@ -1,0 +1,34 @@
+--- a/Expressions.cpp
++++ b/Expressions.cpp
+@@ -3064,9 +3064,16 @@
+   if (isa<moore::TimeType>(packedType) &&
+       moore::isIntType(intType, 64, moore::Domain::FourValued)) {
+     value = builder.createOrFold<moore::TimeToLogicOp>(loc, value);
+-    auto scale = moore::ConstantOp::create(builder, loc, intType,
+-                                           getTimeScaleInFemtoseconds(*this));
+-    return builder.createOrFold<moore::DivUOp>(loc, value, scale);
++    auto scaleFS = getTimeScaleInFemtoseconds(*this);
++    if (scaleFS == 1)
++      return value;
++    auto scale = moore::ConstantOp::create(builder, loc, intType, scaleFS);
++    auto quotient = builder.createOrFold<moore::DivUOp>(loc, value, scale);
++    auto remainder = builder.createOrFold<moore::ModUOp>(loc, value, scale);
++    auto half = moore::ConstantOp::create(builder, loc, intType, scaleFS / 2);
++    auto roundUp = builder.createOrFold<moore::UgeOp>(loc, remainder, half);
++    auto increment = builder.createOrFold<moore::ZExtOp>(loc, intType, roundUp);
++    return builder.createOrFold<moore::AddOp>(loc, quotient, increment);
+   }
+ 
+   // If this is an aggregate type, make sure that it does not contain any
+@@ -3263,7 +3270,10 @@
+           loc, type, value);
+   }
+   // Handle Real To Int conversion
+-  if (dstInt && isa<moore::RealType>(value.getType())) {
++  // Time has an integer representation, but real values must be scaled to
++  // femtoseconds before conversion. Let the time-specific case below handle it.
++  if (dstInt && !isa<moore::TimeType>(type) &&
++      isa<moore::RealType>(value.getType())) {
+     auto twoValInt = builder.createOrFold<moore::RealToIntOp>(
+         loc, dstInt.getTwoValued(), value);
+     return materializeConversion(type, twoValInt, true, loc, fallible);

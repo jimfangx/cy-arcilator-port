@@ -105,8 +105,10 @@ include $(base_dir)/tools/torture.mk
 #########################################################################################
 # Returns a list of files in directories $1 with single file extension $2.
 # If available, use 'fd' to find the list of files, which is faster than 'find'.
+# Optional IP may contain dangling links to generated headers. Both paths
+# include only links resolving to regular files.
 ifeq ($(shell which fd 2> /dev/null),)
-	lookup_srcs = $(shell find -L $(1)/ -name target -prune -o \( -iname "*.$(2)" ! -iname ".*" \) -print 2> /dev/null)
+	lookup_srcs = $(shell find -L $(1)/ -name target -prune -o \( -type f -iname "*.$(2)" ! -iname ".*" \) -print 2> /dev/null)
 else
 	lookup_srcs = $(shell fd -L -t f -e $(2) . $(1))
 endif
@@ -121,7 +123,16 @@ CHIPYARD_SOURCE_DIRS = \
 	$(filter-out $(base_dir)/generators/firechip,$(wildcard $(addprefix $(base_dir)/,generators/* fpga/fpga-shells fpga/src tools/stage))) \
 	$(addprefix $(base_dir)/,$(FIRESIM_SOURCE_DIRS))
 CHIPYARD_SCALA_SOURCES = $(call lookup_srcs_by_multiple_type,$(CHIPYARD_SOURCE_DIRS),$(SCALA_EXT))
-CHIPYARD_VLOG_SOURCES = $(call lookup_srcs_by_multiple_type,$(CHIPYARD_SOURCE_DIRS),$(VLOG_EXT))
+# addPath wrappers generate these files during elaboration. They are build
+# outputs, rather than resources to package in the assembled generator jar.
+CHIPYARD_VLOG_SOURCES = $(filter-out %.preprocessed.v %.preprocessed.sv,$(call lookup_srcs_by_multiple_type,$(CHIPYARD_SOURCE_DIRS),$(VLOG_EXT)))
+# Blackbox C++ and headers are packaged in the generator jar along with HDL.
+# Track them so a DPI driver edit cannot keep using an older embedded resource.
+CHIPYARD_RESOURCE_DIRS = $(wildcard $(addsuffix /src/main/resources,$(CHIPYARD_SOURCE_DIRS)))
+CHIPYARD_DPI_SOURCES = $(call lookup_srcs_by_multiple_type,$(CHIPYARD_RESOURCE_DIRS),c cc cpp cxx h hpp vh svh)
+# ROM images are embedded resources too. Repackage changed firmware rather
+# than elaborating hardware from an older image in the cached generator jar.
+CHIPYARD_ROM_SOURCES = $(call lookup_srcs_by_multiple_type,$(CHIPYARD_RESOURCE_DIRS),img bin hex mem)
 TAPEOUT_SOURCE_DIRS = $(addprefix $(base_dir)/,tools/tapeout)
 TAPEOUT_SCALA_SOURCES = $(call lookup_srcs_by_multiple_type,$(TAPEOUT_SOURCE_DIRS),$(SCALA_EXT))
 TAPEOUT_VLOG_SOURCES = $(call lookup_srcs_by_multiple_type,$(TAPEOUT_SOURCE_DIRS),$(VLOG_EXT))
@@ -135,7 +146,7 @@ $(build_dir):
 #########################################################################################
 # compile scala jars
 #########################################################################################
-$(GENERATOR_CLASSPATH) &: $(CHIPYARD_SCALA_SOURCES) $(SCALA_BUILDTOOL_DEPS) $(CHIPYARD_VLOG_SOURCES)
+$(GENERATOR_CLASSPATH) &: $(CHIPYARD_SCALA_SOURCES) $(SCALA_BUILDTOOL_DEPS) $(CHIPYARD_VLOG_SOURCES) $(CHIPYARD_DPI_SOURCES) $(CHIPYARD_ROM_SOURCES)
 	mkdir -p $(dir $@)
 	$(call run_sbt_assembly,$(SBT_PROJECT),$(GENERATOR_CLASSPATH))
 

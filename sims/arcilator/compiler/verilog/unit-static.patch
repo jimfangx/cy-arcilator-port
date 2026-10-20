@@ -1,0 +1,11 @@
+--- a/Structure.cpp
++++ b/Structure.cpp
+@@ -1456,6 +1456,8 @@
+   // include instantiable constructs like modules, interfaces, and programs,
+   // which are listed separately as top instances.
+   for (auto *unit : root.compilationUnits) {
++    if (failed(declareStaticLocals(*this, *unit, true)))
++      return failure();
+     recordDPIExportDirectives(*this, *unit, unit->getSyntax());
+     for (const auto &member : unit->members()) {
+       auto loc = convertLocation(member.location);

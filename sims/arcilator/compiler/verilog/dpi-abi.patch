@@ -1,0 +1,189 @@
+--- a/Structure.cpp
++++ b/Structure.cpp
+@@ -11,6 +11,7 @@
+ #include "slang/ast/Compilation.h"
+ #include "slang/ast/symbols/ClassSymbols.h"
+ #include "slang/ast/symbols/MemberSymbols.h"
++#include "slang/ast/types/AllTypes.h"
+ #include "slang/syntax/AllSyntax.h"
+ #include "slang/syntax/SyntaxVisitor.h"
+ #include "llvm/ADT/STLFunctionalExtras.h"
+@@ -2045,6 +2046,151 @@
+   return FunctionType::get(context.getContext(), inputTypes, outputTypes);
+ }
+ 
++static DictionaryAttr describeDPIType(Context &context,
++                                      const slang::ast::Type &original) {
++  using namespace slang::ast;
++  auto &builder = context.builder;
++  const auto &type = original.getCanonicalType();
++  // Typedefs and enums inherit the C representation of their underlying type.
++  if (auto *enumeration = type.as_if<EnumType>())
++    return describeDPIType(context, enumeration->baseType);
++  NamedAttrList info;
++  StringRef kind = "unsupported";
++  if (type.isIntegral()) {
++    info.set("width", builder.getI64IntegerAttr(type.getBitWidth()));
++    info.set("signed", builder.getBoolAttr(type.isSigned()));
++    info.set("four_state", builder.getBoolAttr(type.isFourState()));
++  }
++  if (auto *scalar = type.as_if<ScalarType>()) {
++    kind = scalar->scalarKind == ScalarType::Bit ? "bit" : "logic";
++  } else if (auto *integer = type.as_if<PredefinedIntegerType>()) {
++    switch (integer->integerKind) {
++    case PredefinedIntegerType::Byte:
++      kind = "byte";
++      break;
++    case PredefinedIntegerType::ShortInt:
++      kind = "shortint";
++      break;
++    case PredefinedIntegerType::Int:
++      kind = "int";
++      break;
++    case PredefinedIntegerType::LongInt:
++      kind = "longint";
++      break;
++    case PredefinedIntegerType::Integer:
++      kind = "integer";
++      break;
++    case PredefinedIntegerType::Time:
++      kind = "time";
++      break;
++    }
++  } else if (auto *packed = type.as_if<PackedArrayType>()) {
++    kind = "packed_array";
++    info.set("left", builder.getI64IntegerAttr(packed->range.left));
++    info.set("right", builder.getI64IntegerAttr(packed->range.right));
++    info.set("element", describeDPIType(context, packed->elementType));
++  } else if (type.kind == SymbolKind::PackedStructType) {
++    kind = "packed_struct";
++  } else if (type.kind == SymbolKind::PackedUnionType) {
++    kind = "packed_union";
++  } else if (auto *array = type.as_if<FixedSizeUnpackedArrayType>()) {
++    kind = "unpacked_array";
++    info.set("left", builder.getI64IntegerAttr(array->range.left));
++    info.set("right", builder.getI64IntegerAttr(array->range.right));
++    info.set("element", describeDPIType(context, array->elementType));
++  } else if (auto *array = type.as_if<DPIOpenArrayType>()) {
++    kind = "open_array";
++    info.set("packed", builder.getBoolAttr(array->isPacked));
++    info.set("element", describeDPIType(context, array->elementType));
++  } else if (auto *floating = type.as_if<FloatingType>()) {
++    switch (floating->floatKind) {
++    case FloatingType::ShortReal:
++      kind = "shortreal";
++      break;
++    case FloatingType::Real:
++      kind = "real";
++      break;
++    case FloatingType::RealTime:
++      kind = "realtime";
++      break;
++    }
++  } else if (type.kind == SymbolKind::StringType) {
++    kind = "string";
++  } else if (type.kind == SymbolKind::CHandleType) {
++    kind = "chandle";
++  }
++  info.set("kind", builder.getStringAttr(kind));
++  return info.getDictionary(context.getContext());
++}
++
++static DictionaryAttr
++describeDPIImport(Context &context,
++                  const slang::ast::SubroutineSymbol &subroutine,
++                  StringAttr cName) {
++  auto &builder = context.builder;
++  SmallVector<Attribute> abi, sourceTypes;
++  for (auto *arg : subroutine.getArguments()) {
++    NamedAttrList typeInfo(describeDPIType(context, arg->getType()));
++    StringRef direction;
++    switch (arg->direction) {
++    case slang::ast::ArgumentDirection::In:
++      direction = "in";
++      break;
++    case slang::ast::ArgumentDirection::Out:
++      direction = "out";
++      break;
++    case slang::ast::ArgumentDirection::InOut:
++      direction = "inout";
++      break;
++    case slang::ast::ArgumentDirection::Ref:
++      direction = "ref";
++      break;
++    }
++    typeInfo.set("direction", builder.getStringAttr(direction));
++    abi.push_back(typeInfo.getDictionary(context.getContext()));
++    sourceTypes.push_back(builder.getStringAttr(arg->getType().toString()));
++  }
++  if (!subroutine.getReturnType().isVoid()) {
++    NamedAttrList typeInfo(
++        describeDPIType(context, subroutine.getReturnType()));
++    typeInfo.set("direction", builder.getStringAttr("return"));
++    abi.push_back(typeInfo.getDictionary(context.getContext()));
++    sourceTypes.push_back(
++        builder.getStringAttr(subroutine.getReturnType().toString()));
++  }
++  NamedAttrList declaration;
++  declaration.set("c_name", cName);
++  declaration.set("name", builder.getStringAttr(subroutine.name));
++  declaration.set(
++      "scope",
++      builder.getStringAttr(
++          subroutine.getParentScope()->asSymbol().getHierarchicalPath()));
++  declaration.set("context", builder.getBoolAttr(subroutine.flags.has(
++                                 slang::ast::MethodFlags::DPIContext)));
++  declaration.set("pure", builder.getBoolAttr(subroutine.flags.has(
++                              slang::ast::MethodFlags::Pure)));
++  declaration.set("task",
++                  builder.getBoolAttr(subroutine.subroutineKind ==
++                                      slang::ast::SubroutineKind::Task));
++  declaration.set("source_types", builder.getArrayAttr(sourceTypes));
++  auto timeScale = subroutine.getTimeScale().value_or(context.timeScale);
++  auto inFS = [](slang::TimeScaleValue value) {
++    uint64_t result = static_cast<uint64_t>(value.magnitude);
++    for (unsigned unit = static_cast<unsigned>(value.unit); unit < 5; ++unit)
++      result *= 1000;
++    return result;
++  };
++  declaration.set("timeunit_fs",
++                  builder.getI64IntegerAttr(inFS(timeScale.base)));
++  declaration.set("timeprecision_fs",
++                  builder.getI64IntegerAttr(inFS(timeScale.precision)));
++  NamedAttrList result;
++  result.set("version", builder.getI32IntegerAttr(1));
++  result.set("abi", builder.getArrayAttr(abi));
++  result.set("declaration", declaration.getDictionary(context.getContext()));
++  return result.getDictionary(context.getContext());
++}
++
+ static FailureOr<SmallVector<moore::DPIArgInfo>>
+ getDPISignature(Context &context,
+                 const slang::ast::SubroutineSymbol &subroutine) {
+@@ -2146,10 +2292,24 @@
+     if (failed(dpiSig))
+       return nullptr;
+ 
++    auto cName = subroutine.name;
++    if (auto *syntax = subroutine.getSyntax()) {
++      const auto &importSyntax = syntax->as<slang::syntax::DPIImportSyntax>();
++      if (!importSyntax.c_identifier.valueText().empty())
++        cName = importSyntax.c_identifier.valueText();
++    }
++    auto cNameAttr = StringAttr::get(getContext(), cName);
+     auto dpiOp = moore::DPIFuncOp::create(
+         builder, loc, StringAttr::get(getContext(), qualifiedName), *dpiSig,
+-        /*argumentLocs=*/ArrayAttr(),
+-        StringAttr::get(getContext(), subroutine.name));
++        /*argumentLocs=*/ArrayAttr(), cNameAttr);
++    // Moore-to-Core rebuilds DPI declarations and drops their custom attrs.
++    // Keep original SV ABI information on the enclosing module until the
++    // native RTL pass restores it onto each declaration and call site.
++    NamedAttrList imports(intoModuleOp->getAttrOfType<DictionaryAttr>(
++        "chipyard.dpi_imports"));
++    imports.set(dpiOp.getSymName(), describeDPIImport(*this, subroutine, cNameAttr));
++    intoModuleOp->setAttr("chipyard.dpi_imports",
++                          imports.getDictionary(getContext()));
+     setVisibilityAndExportAttr(dpiOp);
+     lowering = std::make_unique<FunctionLowering>(dpiOp);
+     insertedOp = dpiOp;

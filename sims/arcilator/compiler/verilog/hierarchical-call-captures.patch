@@ -1,0 +1,79 @@
+--- a/HierarchicalNames.cpp
++++ b/HierarchicalNames.cpp
+@@ -30,6 +30,15 @@
+         system && system->subroutine->name == "$bits" &&
+         !expr.arguments().empty() && expr.arguments().front()->type->isFixedSize())
+       return;
++    // A hierarchical call implicitly references every nonlocal captured slot.
++    // Route those references across module boundaries before creating ports,
++    // exactly as for an explicit hierarchical variable access.
++    if (auto *const *callee =
++            std::get_if<const slang::ast::SubroutineSymbol *>(&expr.subroutine))
++      if (auto it = context.functionCaptures.find(*callee);
++          it != context.functionCaptures.end())
++        for (auto *symbol : it->second)
++          recordSymbol(*symbol);
+     visitDefault(expr);
+   }
+ 
+@@ -43,9 +52,14 @@
+   }
+ 
+   void handle(const slang::ast::HierarchicalValueExpression &expr) {
++    if (!expr.ref.isViaIfacePort())
++      recordSymbol(expr.symbol);
++  }
++
++  void recordSymbol(const slang::ast::ValueSymbol &symbol) {
+     auto builder = context.builder;
+     auto *currentInstBody =
+-        expr.symbol.getParentScope()->getContainingInstance();
++        symbol.getParentScope()->getContainingInstance();
+     auto *outermostInstBody =
+         outermostModule.as_if<slang::ast::InstanceBodySymbol>();
+ 
+@@ -59,18 +73,17 @@
+     if (currentInstBody == outermostInstBody)
+       return;
+ 
+-    // References resolved via an interface port (e.g. `bus.member` where `bus`
+-    // is an `Iface.modport` port) are not cross-instance hierarchical accesses;
+-    // they are handled by the interface port lowering machinery in
+-    // Structure.cpp. Recording them here would add a spurious hierPath input
+-    // to the module signature that nothing fills in at the instance site.
+-    if (expr.ref.isViaIfacePort())
++    if (isCompileTimeConstant(symbol.kind))
+       return;
+ 
+-    if (isCompileTimeConstant(expr.symbol.kind))
+-      return;
+-
+-    auto hierName = builder.getStringAttr(expr.symbol.name);
++    // Static task/function locals and formals can share leaf names. Preserve
++    // their scope below the declaring module in the hierarchy port key.
++    std::string path = symbol.getHierarchicalPath();
++    std::string prefix = currentInstBody->getHierarchicalPath() + ".";
++    auto localName = StringRef(path);
++    if (localName.starts_with(prefix))
++      localName = localName.drop_front(prefix.size());
++    auto hierName = builder.getStringAttr(localName);
+     const slang::ast::InstanceBodySymbol *parentInstBody = nullptr;
+ 
+     // Record `name` on `body`, or add this symbol as an alias if another
+@@ -81,13 +94,13 @@
+       for (auto &path : context.hierPaths[body])
+         if (path.hierName == name) {
+           if (!llvm::any_of(path.valueSyms, [&](auto &alias) {
+-                return alias.first == &expr.symbol;
++                return alias.first == &symbol;
+               }))
+-            path.valueSyms.push_back({&expr.symbol, currentInstBody});
++            path.valueSyms.push_back({&symbol, currentInstBody});
+           return;
+         }
+       context.hierPaths[body].push_back(
+-          HierPathInfo{name, {}, direction, {{&expr.symbol, currentInstBody}}});
++          HierPathInfo{name, {}, direction, {{&symbol, currentInstBody}}});
+     };
+ 
+     auto *tempInstBody = currentInstBody;

@@ -1,0 +1,42 @@
+--- a/Types.cpp
++++ b/Types.cpp
+@@ -37,9 +37,8 @@
+   }
+ 
+   Type visit(const slang::ast::FloatingType &type) {
+-    if (type.floatKind == slang::ast::FloatingType::Kind::RealTime)
+-      return moore::TimeType::get(context.getContext());
+-    if (type.floatKind == slang::ast::FloatingType::Kind::Real)
++    if (type.floatKind == slang::ast::FloatingType::Kind::Real ||
++        type.floatKind == slang::ast::FloatingType::Kind::RealTime)
+       return moore::RealType::get(context.getContext(), moore::RealWidth::f64);
+     return moore::RealType::get(context.getContext(), moore::RealWidth::f32);
+   }
+--- a/Expressions.cpp
++++ b/Expressions.cpp
+@@ -3006,7 +3006,8 @@
+       floatType->floatKind == slang::ast::FloatingType::ShortReal) {
+     attr = FloatAttr::get(builder.getF32Type(), svreal.shortReal().v);
+   } else if (svreal.isReal() &&
+-             floatType->floatKind == slang::ast::FloatingType::Real) {
++             (floatType->floatKind == slang::ast::FloatingType::Real ||
++              floatType->floatKind == slang::ast::FloatingType::RealTime)) {
+     attr = FloatAttr::get(builder.getF64Type(), svreal.real().v);
+   } else {
+     mlir::emitError(loc) << "invalid real constant";
+@@ -3879,7 +3880,14 @@
+   if (nameId == ksn::Time || nameId == ksn::STime || nameId == ksn::RealTime) {
+     // Slang already checks the arity of time functions.
+     assert(numArgs == 0 && "time functions take no arguments");
+-    return moore::TimeBIOp::create(builder, loc);
++    Value time = moore::TimeBIOp::create(builder, loc);
++    // Unlike integral time, realtime is an IEEE double value in the lexical
++    // scope's time unit. Preserve fractions before crossing a DPI boundary.
++    if (nameId == ksn::RealTime)
++      return materializeConversion(
++          moore::RealType::get(getContext(), moore::RealWidth::f64),
++          time, false, loc);
++    return time;
+   }
+ 
+   //===--------------------------------------------------------------------===//

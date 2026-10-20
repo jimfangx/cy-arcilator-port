@@ -1,0 +1,456 @@
+--- a/ImportVerilogInternals.h
++++ b/ImportVerilogInternals.h
+@@ -79,6 +79,10 @@
+   /// Slot index in the module signature; see `PortLowering::outputIdx`.
+   std::optional<unsigned> outputIdx;
+   std::optional<unsigned> inputIdx;
++  /// Leaf ordinal in the connected interface array (zero for scalar ports).
++  unsigned elementIndex = 0;
++  /// The internal value for this port, independent of shared Slang symbols.
++  Value value;
+ };
+ 
+ /// Lowering information for an expanded interface instance. Maps each interface
+--- a/Structure.cpp
++++ b/Structure.cpp
+@@ -24,6 +24,21 @@
+ //===----------------------------------------------------------------------===//
+ // Utilities
+ //===----------------------------------------------------------------------===//
++
++/// Enumerate interface array leaves in Slang's connection order. Slang has
++/// already rebased and reversed dimensions to match the receiving port.
++static void collectInterfaceInstances(
++    const slang::ast::Symbol *symbol,
++    SmallVectorImpl<const slang::ast::InstanceSymbol *> &instances) {
++  if (!symbol)
++    return;
++  if (auto *instance = symbol->as_if<slang::ast::InstanceSymbol>()) {
++    instances.push_back(instance);
++  } else if (auto *array = symbol->as_if<slang::ast::InstanceArraySymbol>()) {
++    for (auto *element : array->elements)
++      collectInterfaceInstances(element, instances);
++  }
++}
+ 
+ /// Record `export "DPI-C"` directives in the given scope so that callable
+ /// declarations can be tagged with the exported C name. Slang resolves the
+@@ -150,8 +165,7 @@
+     return success();
+   }
+ 
+-  template <class Node>
+-  void visitParameter(const Node &param) {
++  template <class Node> void visitParameter(const Node &param) {
+     // If debug info is enabled, try to materialize the parameter's constant
+     // value on a best-effort basis and create a `dbg.variable` to track the
+     // value.
+@@ -205,8 +219,7 @@
+   }
+ 
+   // Emit an error for all other members.
+-  template <typename T>
+-  LogicalResult visit(T &&node) {
++  template <typename T> LogicalResult visit(T &&node) {
+     mlir::emitError(loc, "unsupported construct: ")
+         << slang::ast::toString(node.kind);
+     return failure();
+@@ -236,8 +249,7 @@
+   }
+ 
+   /// Emit an error for all other members.
+-  template <typename T>
+-  LogicalResult visit(T &&node) {
++  template <typename T> LogicalResult visit(T &&node) {
+     mlir::emitError(loc, "unsupported package member: ")
+         << slang::ast::toString(node.kind);
+     return failure();
+@@ -341,7 +353,20 @@
+   // a separate op, named with the instance name as a prefix.
+   LogicalResult
+   expandInterfaceInstance(const slang::ast::InstanceSymbol &instNode) {
+-    auto prefix = (Twine(blockNamePrefix) + instNode.name + "_").str();
++    SmallString<64> instanceName(blockNamePrefix);
++    if (instNode.arrayPath.empty()) {
++      instanceName += instNode.name;
++    } else {
++      instanceName += instNode.getArrayName();
++      slang::SmallVector<slang::ConstantRange, 4> dimensions;
++      instNode.getArrayDimensions(dimensions);
++      for (auto [dimension, index] :
++           llvm::zip(dimensions, instNode.arrayPath)) {
++        instanceName += '_';
++        Twine(dimension.lower() + int32_t(index)).toVector(instanceName);
++      }
++    }
++    auto prefix = (Twine(instanceName) + "_").str();
+     auto lowering = std::make_unique<InterfaceLowering>();
+     Context::ValueSymbolScope scope(context.valueSymbols);
+ 
+@@ -487,8 +512,7 @@
+     portValues.reserve(moduleType.getNumPorts());
+ 
+     // Map each InterfacePortSymbol to the connected interface instance.
+-    SmallDenseMap<const slang::ast::InterfacePortSymbol *,
+-                  const slang::ast::InstanceSymbol *>
++    SmallDenseMap<StringRef, SmallVector<const slang::ast::InstanceSymbol *>>
+         ifaceConnMap;
+ 
+     for (const auto *con : instNode.getPortConnections()) {
+@@ -634,10 +658,8 @@
+       if (const auto *ifacePort =
+               con->port.as_if<slang::ast::InterfacePortSymbol>()) {
+         auto ifaceConn = con->getIfaceConn();
+-        const auto *connInst =
+-            ifaceConn.first->as_if<slang::ast::InstanceSymbol>();
+-        if (connInst)
+-          ifaceConnMap[ifacePort] = connInst;
++        collectInterfaceInstances(ifaceConn.first,
++                                  ifaceConnMap[ifacePort->name]);
+         continue;
+       }
+ 
+@@ -668,13 +690,16 @@
+       if (!fp.bodySym || !fp.origin)
+         continue;
+       // Find which interface instance is connected to this port.
+-      auto it = ifaceConnMap.find(fp.origin);
++      auto it = ifaceConnMap.find(fp.origin->name);
+       if (it == ifaceConnMap.end()) {
+         mlir::emitError(loc)
+             << "no interface connection for port `" << fp.name << "`";
+         return failure();
+       }
+-      const auto *connInst = it->second;
++      if (fp.elementIndex >= it->second.size())
++        return mlir::emitError(loc)
++               << "interface array shape mismatch for port `" << fp.name << "`";
++      const auto *connInst = it->second[fp.elementIndex];
+       // Look up the InterfaceLowering for that instance.
+       auto *ifaceLowering = context.interfaceInstances.lookup(connInst);
+       if (!ifaceLowering) {
+@@ -683,13 +708,13 @@
+         return failure();
+       }
+       // Find the expanded SSA value for this body member.
+-      auto valIt = ifaceLowering->expandedMembers.find(fp.bodySym);
+-      if (valIt == ifaceLowering->expandedMembers.end()) {
+-        mlir::emitError(loc)
+-            << "unresolved interface port signal `" << fp.name << "`";
+-        return failure();
+-      }
+-      Value val = valIt->second;
++      Value val = ifaceLowering->expandedMembers.lookup(fp.bodySym);
++      if (!val)
++        val = ifaceLowering->expandedMembersByName.lookup(
++            builder.getStringAttr(fp.bodySym->name));
++      if (!val)
++        return mlir::emitError(loc)
++               << "unresolved interface port signal `" << fp.name << "`";
+       if (fp.direction == hw::ModulePort::Output) {
+         outputValues[*fp.outputIdx] = val;
+       } else {
+@@ -1025,8 +1050,7 @@
+   }
+ 
+   /// Emit an error for all other members.
+-  template <typename T>
+-  LogicalResult visit(T &&node) {
++  template <typename T> LogicalResult visit(T &&node) {
+     mlir::emitError(loc, "unsupported module member: ")
+         << slang::ast::toString(node.kind);
+     return failure();
+@@ -1178,6 +1202,13 @@
+           slang::ast::DefinitionKind::Interface)
+         return ModuleVisitor(context, loc, blockNamePrefix)
+             .expandInterfaceInstance(*instNode);
++      return success();
++    }
++
++    if (const auto *array = member.as_if<slang::ast::InstanceArraySymbol>()) {
++      for (auto *element : array->elements)
++        if (failed(predeclareInterfaceMember(*element, blockNamePrefix)))
++          return failure();
+       return success();
+     }
+ 
+@@ -1458,78 +1489,100 @@
+     // Lambda to handle interface ports by flattening them into individual
+     // signal ports. Uses modport directions if a modport is specified,
+     // otherwise treats all signals as inout (ref type)
+-    auto handleIfacePort = [&](const slang::ast::InterfacePortSymbol
+-                                   &ifacePort) {
++    auto handleIfacePort =
++        [&](const slang::ast::InterfacePortSymbol &ifacePort) -> LogicalResult {
+       auto portLoc = convertLocation(ifacePort.location);
+       auto [connSym, modportSym] = ifacePort.getConnection();
+-      const auto *ifaceInst =
+-          connSym ? connSym->as_if<slang::ast::InstanceSymbol>() : nullptr;
+-      auto portPrefix = (Twine(ifacePort.name) + "_").str();
+-
+-      if (modportSym) {
+-        // Modport specified: iterate modport members for signal directions.
+-        for (const auto &member : modportSym->members()) {
+-          const auto *mpp = member.as_if<slang::ast::ModportPortSymbol>();
+-          if (!mpp)
+-            continue;
+-          auto type = convertType(mpp->getType());
+-          if (!type)
++      SmallVector<const slang::ast::InstanceSymbol *> instances;
++      collectInterfaceInstances(connSym, instances);
++      if (instances.empty())
++        return mlir::emitError(portLoc)
++               << "unsupported interface port connection for `"
++               << ifacePort.name << "`";
++      bool isArray = connSym->as_if<slang::ast::InstanceArraySymbol>();
++      for (auto [elementIndex, ifaceInst] : llvm::enumerate(instances)) {
++        auto portPrefix = (Twine(ifacePort.name) + "_" +
++                           (isArray ? Twine(elementIndex).str() + "_" : ""))
++                              .str();
++        const slang::ast::ModportSymbol *elementModport = nullptr;
++        if (modportSym) {
++          const auto *member = ifaceInst->body.find(modportSym->name);
++          elementModport =
++              member ? member->as_if<slang::ast::ModportSymbol>() : nullptr;
++          if (!elementModport)
++            return mlir::emitError(portLoc)
++                   << "missing interface array modport";
++        }
++
++        if (modportSym) {
++          // Modport specified: iterate modport members for signal
++          // directions.
++          for (const auto &member : elementModport->members()) {
++            const auto *mpp = member.as_if<slang::ast::ModportPortSymbol>();
++            if (!mpp)
++              continue;
++            auto type = convertType(mpp->getType());
++            if (!type)
++              return failure();
++            auto name =
++                builder.getStringAttr(Twine(portPrefix) + StringRef(mpp->name));
++            BlockArgument arg;
++            hw::ModulePort::Direction dir;
++            std::optional<unsigned> ifaceOutputIdx;
++            std::optional<unsigned> ifaceInputIdx;
++            if (mpp->direction == ArgumentDirection::Out) {
++              dir = hw::ModulePort::Output;
++              modulePorts.push_back({name, type, dir});
++              ifaceOutputIdx = outputIdx++;
++            } else {
++              dir = hw::ModulePort::Input;
++              if (mpp->direction != ArgumentDirection::In)
++                type = moore::RefType::get(cast<moore::UnpackedType>(type));
++              modulePorts.push_back({name, type, dir});
++              arg = block->addArgument(type, portLoc);
++              ifaceInputIdx = inputIdx++;
++            }
++            lowering.ifacePorts.push_back(
++                {name, dir, type, portLoc, arg, &ifacePort, mpp->internalSymbol,
++                 ifaceInst, mpp, ifaceOutputIdx, ifaceInputIdx,
++                 static_cast<unsigned>(elementIndex)});
++          }
++        } else {
++          // No modport: iterate interface body for all variables and nets.
++          // Treat them all as inout (input with ref type).
++          const auto *instSym = ifaceInst;
++          if (!instSym) {
++            mlir::emitError(portLoc)
++                << "unsupported interface port connection for `"
++                << ifacePort.name << "`";
+             return failure();
+-          auto name =
+-              builder.getStringAttr(Twine(portPrefix) + StringRef(mpp->name));
+-          BlockArgument arg;
+-          hw::ModulePort::Direction dir;
+-          std::optional<unsigned> ifaceOutputIdx;
+-          std::optional<unsigned> ifaceInputIdx;
+-          if (mpp->direction == ArgumentDirection::Out) {
+-            dir = hw::ModulePort::Output;
+-            modulePorts.push_back({name, type, dir});
+-            ifaceOutputIdx = outputIdx++;
+-          } else {
+-            dir = hw::ModulePort::Input;
+-            if (mpp->direction != ArgumentDirection::In)
+-              type = moore::RefType::get(cast<moore::UnpackedType>(type));
+-            modulePorts.push_back({name, type, dir});
+-            arg = block->addArgument(type, portLoc);
+-            ifaceInputIdx = inputIdx++;
+           }
+-          lowering.ifacePorts.push_back(
+-              {name, dir, type, portLoc, arg, &ifacePort, mpp->internalSymbol,
+-               ifaceInst, mpp, ifaceOutputIdx, ifaceInputIdx});
+-        }
+-      } else {
+-        // No modport: iterate interface body for all variables and nets.
+-        // Treat them all as inout (input with ref type).
+-        const auto *instSym = connSym->as_if<slang::ast::InstanceSymbol>();
+-        if (!instSym) {
+-          mlir::emitError(portLoc)
+-              << "unsupported interface port connection for `" << ifacePort.name
+-              << "`";
+-          return failure();
+-        }
+-        for (const auto &member : instSym->body.members()) {
+-          const slang::ast::Type *slangType = nullptr;
+-          const slang::ast::Symbol *bodySym = nullptr;
+-          if (const auto *var = member.as_if<slang::ast::VariableSymbol>()) {
+-            slangType = &var->getType();
+-            bodySym = var;
+-          } else if (const auto *net = member.as_if<slang::ast::NetSymbol>()) {
+-            slangType = &net->getType();
+-            bodySym = net;
+-          } else {
+-            continue;
++          for (const auto &member : instSym->body.members()) {
++            const slang::ast::Type *slangType = nullptr;
++            const slang::ast::Symbol *bodySym = nullptr;
++            if (const auto *var = member.as_if<slang::ast::VariableSymbol>()) {
++              slangType = &var->getType();
++              bodySym = var;
++            } else if (const auto *net =
++                           member.as_if<slang::ast::NetSymbol>()) {
++              slangType = &net->getType();
++              bodySym = net;
++            } else {
++              continue;
++            }
++            auto type = convertType(*slangType);
++            if (!type)
++              return failure();
++            auto name = builder.getStringAttr(Twine(portPrefix) +
++                                              StringRef(bodySym->name));
++            auto refType = moore::RefType::get(cast<moore::UnpackedType>(type));
++            modulePorts.push_back({name, refType, hw::ModulePort::Input});
++            auto arg = block->addArgument(refType, portLoc);
++            lowering.ifacePorts.push_back(
++                {name, hw::ModulePort::Input, refType, portLoc, arg, &ifacePort,
++                 bodySym, instSym, nullptr, std::nullopt, inputIdx++,
++                 static_cast<unsigned>(elementIndex)});
+           }
+-          auto type = convertType(*slangType);
+-          if (!type)
+-            return failure();
+-          auto name = builder.getStringAttr(Twine(portPrefix) +
+-                                            StringRef(bodySym->name));
+-          auto refType = moore::RefType::get(cast<moore::UnpackedType>(type));
+-          modulePorts.push_back({name, refType, hw::ModulePort::Input});
+-          auto arg = block->addArgument(refType, portLoc);
+-          lowering.ifacePorts.push_back(
+-              {name, hw::ModulePort::Input, refType, portLoc, arg, &ifacePort,
+-               bodySym, instSym, nullptr, std::nullopt, inputIdx++});
+         }
+       }
+       return success();
+@@ -1711,6 +1764,7 @@
+     } else {
+       portValue = fp.arg;
+     }
++    fp.value = portValue;
+     valueSymbols.insert(valueSym, portValue);
+     // Slang resolves in-body accesses (e.g. `bus.r`) through the
+     // ModportPortSymbol rather than the interface body's variable. Register
+@@ -1802,7 +1856,7 @@
+         fp.bodySym ? fp.bodySym->as_if<slang::ast::ValueSymbol>() : nullptr;
+     if (!valueSym)
+       continue;
+-    Value ref = valueSymbols.lookup(valueSym);
++    Value ref = fp.value;
+     if (!ref)
+       continue;
+     outputs[*fp.outputIdx] =
+@@ -3136,10 +3190,7 @@
+   }
+ 
+   // Catch-all: ignore everything else during property pass
+-  template <typename T>
+-  LogicalResult visit(T &&) {
+-    return success();
+-  }
++  template <typename T> LogicalResult visit(T &&) { return success(); }
+ };
+ 
+ /// Visitor for class method declarations.
+@@ -3297,8 +3348,7 @@
+   }
+ 
+   // Emit an error for all other members.
+-  template <typename T>
+-  LogicalResult visit(T &&node) {
++  template <typename T> LogicalResult visit(T &&node) {
+     Location loc = UnknownLoc::get(context.getContext());
+     if constexpr (requires { node.location; })
+       loc = convertLocation(node.location);
+--- a/Expressions.cpp
++++ b/Expressions.cpp
+@@ -1002,6 +1002,19 @@
+   Value visit(const slang::ast::HierarchicalValueExpression &expr) {
+     auto hierLoc = context.convertLocation(expr.symbol.location);
+ 
++    if (expr.ref.isViaIfacePort() &&
++        !context.resolveCapturedValue(expr.symbol)) {
++      if (auto value = lookupExpandedInterfaceMember(context, expr)) {
++        if (isa<moore::RefType>(value.getType())) {
++          auto readOp = moore::ReadOp::create(builder, hierLoc, value);
++          if (context.rvalueReadCallback)
++            context.rvalueReadCallback(readOp);
++          return readOp.getResult();
++        }
++        return value;
++      }
++    }
++
+     // Canonicalize self-references (e.g., SubD.z inside SubD) to local
+     // variable lookups. When the hierarchical path's first instance body
+     // is the same module that declares the target symbol, the reference
+@@ -1192,8 +1205,7 @@
+ 
+   // Helper function to convert an argument to a simple bit vector type, pass it
+   // to a reduction op, and optionally invert the result.
+-  template <class ConcreteOp>
+-  Value createReduction(Value arg, bool invert) {
++  template <class ConcreteOp> Value createReduction(Value arg, bool invert) {
+     arg = context.convertToSimpleBitVector(arg);
+     if (!arg)
+       return {};
+@@ -1539,8 +1551,7 @@
+ 
+   // Helper function to convert two arguments to a simple bit vector type and
+   // pass them into a binary op.
+-  template <class ConcreteOp>
+-  Value createBinary(Value lhs, Value rhs) {
++  template <class ConcreteOp> Value createBinary(Value lhs, Value rhs) {
+     lhs = context.convertToSimpleBitVector(lhs);
+     if (!lhs)
+       return {};
+@@ -2588,8 +2599,7 @@
+   }
+ 
+   /// Emit an error for all other expressions.
+-  template <typename T>
+-  Value visit(T &&node) {
++  template <typename T> Value visit(T &&node) {
+     mlir::emitError(loc, "unsupported expression: ")
+         << slang::ast::toString(node.kind);
+     return {};
+@@ -2664,6 +2674,10 @@
+ 
+   // Handle hierarchical values, such as `Top.sub.var = x`.
+   Value visit(const slang::ast::HierarchicalValueExpression &expr) {
++    if (expr.ref.isViaIfacePort() && !context.resolveCapturedValue(expr.symbol))
++      if (auto value = lookupExpandedInterfaceMember(context, expr))
++        return value;
++
+     // Canonicalize self-references (e.g., SubD.w inside SubD) to local
+     // variable lookups (same rationale as rvalue visitor).
+     if (!expr.ref.path.empty()) {
+@@ -2784,8 +2798,7 @@
+   }
+ 
+   /// Emit an error for all other expressions.
+-  template <typename T>
+-  Value visit(T &&node) {
++  template <typename T> Value visit(T &&node) {
+     return context.convertRvalueExpression(node);
+   }
+ 

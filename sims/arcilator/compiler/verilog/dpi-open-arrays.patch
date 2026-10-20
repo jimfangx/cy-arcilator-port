@@ -1,0 +1,132 @@
+--- a/ImportVerilogInternals.h
++++ b/ImportVerilogInternals.h
+@@ -262,6 +262,9 @@
+   LogicalResult convertPackage(const slang::ast::PackageSymbol &package);
+   FunctionLowering *
+   declareFunction(const slang::ast::SubroutineSymbol &subroutine);
++  moore::DPIFuncOp specializeOpenDPI(
++      moore::DPIFuncOp original, const slang::ast::SubroutineSymbol &subroutine,
++      ArrayRef<const slang::ast::Type *> actualTypes);
+   LogicalResult defineFunction(const slang::ast::SubroutineSymbol &subroutine);
+   LogicalResult
+   convertPrimitiveInstance(const slang::ast::PrimitiveInstanceSymbol &prim);
+--- a/Structure.cpp
++++ b/Structure.cpp
+@@ -2386,6 +2386,65 @@
+   return args;
+ }
+ 
++// Preserve the actual shape of an open-array call without converting it into
++// an untyped dynamic pointer. The native bridge still exposes an open handle
++// to C; native_open_actual records only its SV value transport representation.
++moore::DPIFuncOp Context::specializeOpenDPI(
++    moore::DPIFuncOp original, const slang::ast::SubroutineSymbol &subroutine,
++    ArrayRef<const slang::ast::Type *> actualTypes) {
++  auto signature = getDPISignature(*this, subroutine);
++  if (failed(signature)) return {};
++  auto imports = intoModuleOp->getAttrOfType<DictionaryAttr>("chipyard.dpi_imports");
++  auto entry = imports.getAs<DictionaryAttr>(original.getSymName());
++  SmallVector<Attribute> abi(entry.getAs<ArrayAttr>("abi").getValue());
++  bool changed = false;
++  auto compatible = [&](auto &&self, const slang::ast::Type &formal,
++                        const slang::ast::Type &actual) -> bool {
++    using namespace slang::ast;
++    const auto &f = formal.getCanonicalType(), &a = actual.getCanonicalType();
++    if (auto *open = f.as_if<DPIOpenArrayType>()) {
++      auto *fixed = a.as_if<FixedSizeUnpackedArrayType>();
++      return !open->isPacked && fixed && self(self, open->elementType, fixed->elementType);
++    }
++    if (auto *fixed = f.as_if<FixedSizeUnpackedArrayType>()) {
++      auto *other = a.as_if<FixedSizeUnpackedArrayType>();
++      return other && fixed->range.width() == other->range.width() &&
++             self(self, fixed->elementType, other->elementType);
++    }
++    return f.isMatching(a);
++  };
++  for (auto [i, arg] : llvm::enumerate(subroutine.getArguments())) {
++    if (actualTypes[i] == &arg->getType()) continue;
++    if (!compatible(compatible, arg->getType(), *actualTypes[i])) {
++      mlir::emitError(convertLocation(arg->location),
++                      "native open DPI requires compatible fixed unpacked actual dimensions");
++      return {};
++    }
++    auto type = convertType(*actualTypes[i]);
++    if (!type) return {};
++    (*signature)[i].type = type;
++    NamedAttrList info(cast<DictionaryAttr>(abi[i]));
++    info.set("native_open_actual", describeDPIType(*this, *actualTypes[i]));
++    abi[i] = info.getDictionary(getContext());
++    changed = true;
++  }
++  if (!changed) return original;
++  OpBuilder::InsertionGuard guard(builder);
++  builder.setInsertionPointAfter(original);
++  auto specialized = moore::DPIFuncOp::create(
++      builder, original.getLoc(),
++      builder.getStringAttr(original.getSymName().str() + "_open_actual"),
++      *signature, ArrayAttr{}, original->getAttrOfType<StringAttr>("verilogName"));
++  SymbolTable::setSymbolVisibility(specialized, SymbolTable::Visibility::Private);
++  symbolTable.insert(specialized);
++  NamedAttrList metadata(entry);
++  metadata.set("abi", builder.getArrayAttr(abi));
++  NamedAttrList updated(imports);
++  updated.set(specialized.getSymName(), metadata.getDictionary(getContext()));
++  intoModuleOp->setAttr("chipyard.dpi_imports", updated.getDictionary(getContext()));
++  return specialized;
++}
++
+ /// Convert a function and its arguments to a function declaration in the IR.
+ /// This does not convert the function body.
+ FunctionLowering *
+--- a/Expressions.cpp
++++ b/Expressions.cpp
+@@ -1995,6 +1995,14 @@
+     if (isa<moore::DPIFuncOp>(lowering->op.getOperation())) {
+       SmallVector<Value> operands;
+       SmallVector<Value> resultTargets;
++      SmallVector<const slang::ast::Type *> actualTypes;
++      auto containsOpen = [](auto &&self, const slang::ast::Type &type) -> bool {
++        const auto &canonical = type.getCanonicalType();
++        if (canonical.as_if<slang::ast::DPIOpenArrayType>()) return true;
++        if (auto *array = canonical.as_if<slang::ast::FixedSizeUnpackedArrayType>())
++          return self(self, array->elementType);
++        return false;
++      };
+ 
+       for (auto [callArg, declArg] :
+            llvm::zip(expr.arguments(), subroutine->getArguments())) {
+@@ -2003,7 +2011,16 @@
+                 actual->as_if<slang::ast::AssignmentExpression>())
+           actual = &assign->left();
+ 
+-        auto argType = context.convertType(declArg->getType());
++        const auto *effectiveType = &declArg->getType();
++        if (containsOpen(containsOpen, *effectiveType)) {
++          while (auto *conversion = actual->as_if<slang::ast::ConversionExpression>()) {
++            if (!conversion->isImplicit()) break;
++            actual = &conversion->operand();
++          }
++          effectiveType = actual->type;
++        }
++        actualTypes.push_back(effectiveType);
++        auto argType = context.convertType(*effectiveType);
+         if (!argType)
+           return {};
+ 
+@@ -2037,11 +2054,14 @@
+         }
+       }
+ 
++      auto dpi = context.specializeOpenDPI(
++          cast<moore::DPIFuncOp>(lowering->op.getOperation()), *subroutine, actualTypes);
++      if (!dpi) return {};
+       SmallVector<Type> resultTypes(
+-          cast<FunctionType>(lowering->op.getFunctionType()).getResults());
++          cast<FunctionType>(dpi.getFunctionType()).getResults());
+       auto callOp = moore::FuncDPICallOp::create(
+           builder, loc, resultTypes,
+-          SymbolRefAttr::get(lowering->op.getNameAttr()), operands);
++          SymbolRefAttr::get(dpi.getSymNameAttr()), operands);
+       if (subroutine->flags.has(slang::ast::MethodFlags::DPIContext)) {
+         auto *invocation = expr.syntax
+             ? expr.syntax->as_if<slang::syntax::InvocationExpressionSyntax>()

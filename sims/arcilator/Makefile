@@ -1,0 +1,262 @@
+# Arcilator executes the generated HW with native event scheduling and bindings
+# to the original C/C++ peripheral drivers. The hybrid runtime is a reference.
+base_dir := $(abspath ../..)
+sim_dir := $(abspath .)
+include $(base_dir)/variables.mk
+sim_name := arcilator
+sim_prefix := simulator
+ARC_RUNTIME ?= $(if $(filter hybrid,$(MAKECMDGOALS)),hybrid,native)
+ifeq ($(filter $(ARC_RUNTIME),native hybrid),)
+$(error ARC_RUNTIME must be native or hybrid)
+endif
+sim_hybrid := $(sim_dir)/$(sim_prefix)-$(MODEL_PACKAGE)-$(CONFIG)
+sim_hybrid_debug := $(sim_hybrid)-debug
+sim_native := $(sim_dir)/simulator-native-$(MODEL_PACKAGE)-$(CONFIG)
+sim_native_debug := $(sim_native)-debug
+sim := $(if $(filter native,$(ARC_RUNTIME)),$(sim_native),$(sim_hybrid))
+sim_debug := $(sim)-debug
+include $(base_dir)/sims/common-sim-flags.mk
+.DEFAULT_GOAL := default
+.DELETE_ON_ERROR:
+.PHONY: default debug
+default: $(sim)
+debug: $(sim_debug)
+.PHONY: native native-debug hybrid
+native: $(sim_native)
+native-debug: $(sim_native_debug)
+hybrid: $(sim_hybrid)
+SIM_FILE_REQS += $(ROCKETCHIP_RSRCS_DIR)/vsrc/TestDriver.v
+$(sim_files): $(SIM_FILE_REQS) $(ALL_MODS_FILELIST) | $(GEN_COLLATERAL_DIR)
+	cp -f $(SIM_FILE_REQS) $(GEN_COLLATERAL_DIR)
+	printf '%s\n' $(addprefix $(GEN_COLLATERAL_DIR)/,$(notdir $(SIM_FILE_REQS))) > $@
+include $(base_dir)/common.mk
+
+# Use one CIRCT installation for the HW frontend, optimizer, simulator, and LLVM
+# code generator: their IR and runtime ABIs must agree.
+ifdef ARCILATOR
+CIRCT_BIN ?= $(patsubst %/,%,$(dir $(shell command -v $(ARCILATOR))))
+else
+CIRCT_BIN ?= $(patsubst %/,%,$(dir $(shell command -v arcilator)))
+ARCILATOR = $(CIRCT_BIN)/arcilator
+endif
+ARC_FIRTOOL ?= $(CIRCT_BIN)/firtool
+CIRCT_OPT ?= $(CIRCT_BIN)/circt-opt
+ifeq ($(origin CIRCT_VERILOG),undefined)
+ARC_FRONTEND_PATCHES ?= auto
+else
+ARC_FRONTEND_PATCHES ?= off
+endif
+CIRCT_VERILOG ?= $(CIRCT_BIN)/circt-verilog
+LLVM_OPT ?= $(CIRCT_BIN)/opt
+LLC ?= $(CIRCT_BIN)/llc
+LLVM_CONFIG ?= $(CIRCT_BIN)/llvm-config
+MLIR_TRANSLATE ?= $(CIRCT_BIN)/mlir-translate
+CIRCT_ROOT ?= $(abspath $(CIRCT_BIN)/..)
+PYTHON ?= python3
+VERILATOR ?= verilator
+ARCILATOR_FLAGS ?= --split-funcs-threshold=8192
+ARC_FIRTOOL_FLAGS ?=
+ARC_RTL_FLAGS ?=
+ARC_PARTITION_OPS ?= 4096
+ARC_PARTITION_PORTS ?= 16384
+ARC_MODEL_OPS ?= 4096
+ARC_OPT_LEVEL ?= 3
+ARC_LLC_OPT_LEVEL ?= $(ARC_OPT_LEVEL)
+ARC_BUILD_JOBS ?= 4
+ARC_VERILATOR_FLAGS ?=
+ARC_CFLAGS ?=
+ARC_RUNTIME_LIBS ?= -L$(CIRCT_ROOT)/lib -lCIRCTArcRuntime $(shell $(LLVM_CONFIG) --libs support 2>/dev/null) -lz -lpthread -ldl
+get_waveform_flag = +vcdfile=$(1).vcd
+ifneq ($(RANDOM_SEED),)
+SEED_FLAG := $(if $(filter native,$(ARC_RUNTIME)),+seed=$(RANDOM_SEED),+verilator+seed+$(RANDOM_SEED))
+endif
+HELP_COMPILATION_VARIABLES += \
+"   CIRCT_BIN              = directory containing a matching CIRCT tool suite (tested with firtool 1.162.0)" \
+"   ARCILATOR_FLAGS        = extra Arcilator compiler options" \
+"   ARC_FIRTOOL_FLAGS      = extra native HW frontend options" \
+"   ARC_RUNTIME            = native (default) or hybrid reference runtime" \
+"   ARC_RTL_FLAGS          = extra CIRCT Verilog frontend options" \
+"   ARC_PARTITION_OPS      = operation budget per compiler module [$(ARC_PARTITION_OPS)]" \
+"   ARC_PARTITION_PORTS    = compiler module port budget [$(ARC_PARTITION_PORTS)]" \
+"   ARC_MODEL_OPS          = operation budget per model procedure; 0 disables outlining [$(ARC_MODEL_OPS)]" \
+"   ARC_OPT_LEVEL          = LLVM IR optimization level [$(ARC_OPT_LEVEL)]" \
+"   ARC_LLC_OPT_LEVEL      = machine-code optimization level [$(ARC_LLC_OPT_LEVEL)]" \
+"   ARC_VERILATOR_FLAGS    = extra options for the foreign-model runtime compiler" \
+"   ARC_BUILD_JOBS         = parallel C++ compilation jobs [$(ARC_BUILD_JOBS)]"
+
+arc_dir := $(build_dir)/arcilator$(if $(filter native,$(ARC_RUNTIME)),-native)
+arc_debug_dir := $(arc_dir)-debug
+
+$(arc_dir) $(arc_debug_dir):
+	mkdir -p $@
+
+# FORCE checks settings on each requested build; unchanged contents preserve the
+# dependency timestamp, so an identical invocation does not rebuild the model.
+# Quote each complete NAME=VALUE argument, including embedded shell metacharacters.
+arc_shell_quote = '$(subst ','"'"',$(1))'
+define arc_settings
+$(1): $(sim_dir)/settings.py FORCE | $(3)
+	$$(PYTHON) $$(sim_dir)/settings.py --output $$@ $$(foreach name,$(2),$$(call arc_shell_quote,$$(name)=$$($$(name))))
+endef
+$(eval $(call arc_settings,$(arc_dir)/frontend-settings.json,PYTHON ARC_FIRTOOL ARC_FIRTOOL_FLAGS VLOG_MODEL,$(arc_dir)))
+ifeq ($(ARC_RUNTIME),native)
+$(eval $(call arc_settings,$(arc_dir)/collateral-settings.json,TOP MODEL,$(arc_dir)))
+$(MFC_EXTRA_ANNO_FILE) $(FINAL_ANNO_FILE): $(arc_dir)/collateral-settings.json
+endif
+$(eval $(call arc_settings,$(arc_dir)/filelist-settings.json,BB_MODS_FILELIST EXT_FILELISTS EXTRA_SIM_SOURCES GEN_COLLATERAL_DIR TOP_SMEMS_FILE MODEL_SMEMS_FILE ARC_RUNTIME,$(arc_dir)))
+$(eval $(call arc_settings,$(arc_dir)/partition-settings.json,PYTHON CIRCT_OPT CXX VLOG_MODEL ARC_RUNTIME ARC_PARTITION_OPS ARC_PARTITION_PORTS,$(arc_dir)))
+
+$(arc_dir)/design.mlir: $(FIRRTL_FILE) $(sim_dir)/frontend.py $(arc_dir)/frontend-settings.json | $(arc_dir) check-arcilator-tools
+	$(call require_cmd,$(ARC_FIRTOOL))
+	$(PYTHON) $(sim_dir)/frontend.py --input $< --output $@.tmp --top $(VLOG_MODEL) \
+		--firtool $(ARC_FIRTOOL) -- $(ARC_FIRTOOL_FLAGS)
+	mv $@.tmp $@
+
+arc_input := $(arc_dir)/design.mlir
+ifeq ($(ARC_RUNTIME),native)
+arc_input := $(arc_dir)/native-design.mlir
+$(eval $(call arc_settings,$(arc_dir)/rtl-settings.json,PYTHON CIRCT_VERILOG ARC_FRONTEND_PATCHES CIRCT_OPT CXX SIM_PREPROC_DEFINES EXT_INCDIRS ARC_RTL_FLAGS,$(arc_dir)))
+arc_frontend_sources := $(wildcard $(sim_dir)/compiler/verilog/*.py $(sim_dir)/compiler/verilog/*.patch $(sim_dir)/compiler/verilog/*.json $(sim_dir)/compiler/verilog/CMakeLists.txt)
+$(arc_dir)/rtl-libraries.json: $(arc_dir)/blackboxes.f $(sim_dir)/rtl_libraries.py FORCE
+	$(PYTHON) $(sim_dir)/rtl_libraries.py --filelist $(arc_dir)/blackboxes.f --root $(base_dir) --output $@
+$(arc_input) $(arc_dir)/rtl.json: $(arc_dir)/rtl-libraries.json $(sim_dir)/rtl_libraries.py
+$(arc_input) $(arc_dir)/rtl.json &: $(arc_dir)/design.mlir $(arc_dir)/blackboxes.f $(sim_dir)/native_hw.py $(sim_dir)/native_exports.py $(sim_dir)/native/models.def $(sim_dir)/compiler/RTL.cpp $(sim_dir)/compiler/SignalWrites.cpp $(sim_dir)/compiler/SignalState.cpp $(sim_dir)/compiler/SignalMemory.cpp $(sim_dir)/compiler/NativeHandles.cpp $(sim_dir)/compiler/NativeContexts.cpp $(sim_dir)/compiler/HierarchyFormats.cpp $(sim_dir)/compiler/ScopeFrames.h $(sim_dir)/compiler/NativeStrings.cpp $(sim_dir)/compiler/FormatStrings.cpp $(sim_dir)/compiler/UnionBits.cpp $(sim_dir)/compiler/NativeMem2Reg.cpp $(sim_dir)/compiler/LocalMemory.cpp $(sim_dir)/compiler/partition.py $(arc_frontend_sources) $(arc_dir)/rtl-settings.json
+	$(PYTHON) $(sim_dir)/native_hw.py --input $< --output $(arc_input) \
+		--filelist $(arc_dir)/blackboxes.f --work $(arc_dir)/rtl \
+		--library-manifest $(arc_dir)/rtl-libraries.json \
+		--circt-verilog $(CIRCT_VERILOG) --frontend-patches=$(ARC_FRONTEND_PATCHES) --circt-opt $(CIRCT_OPT) --cxx="$(CXX)" \
+		--flags="$(SIM_PREPROC_DEFINES) $(addprefix -I,$(EXT_INCDIRS)) $(ARC_RTL_FLAGS)"
+endif
+
+$(arc_dir)/model.mlir $(arc_dir)/ArcHarness.sv $(arc_dir)/partition.json &: $(arc_input) $(sim_dir)/partition.py $(sim_dir)/compiler/memories.py $(sim_dir)/compiler/partition.py $(sim_dir)/compiler/Partition.cpp $(sim_dir)/compiler/Properties.cpp $(sim_dir)/compiler/HierarchyFormats.cpp $(sim_dir)/compiler/ScopeFrames.h $(sim_dir)/compiler/TemporalProperties.cpp $(sim_dir)/compiler/ProceduralFeedback.cpp $(arc_dir)/partition-settings.json
+	$(PYTHON) $(sim_dir)/partition.py --input $< --output $(arc_dir) --top $(VLOG_MODEL) --circt-opt $(CIRCT_OPT) --cxx="$(CXX)" $(if $(filter native,$(ARC_RUNTIME)),--native-sparse-memories)
+	$(PYTHON) $(sim_dir)/compiler/partition.py --input $(arc_dir)/partitioned.mlir --output $(arc_dir)/outlined.mlirbc \
+		--circt-opt $(CIRCT_OPT) --cache $(gen_dir)/compiler --cxx="$(CXX)" \
+		--max-ops=$(ARC_PARTITION_OPS) --max-ports=$(ARC_PARTITION_PORTS) --emit-bytecode $(if $(filter native,$(ARC_RUNTIME)),--native-feedback)
+	$(CIRCT_OPT) $(arc_dir)/outlined.mlirbc --symbol-dce --canonicalize -o $(arc_dir)/model.mlir.tmp
+	# Refresh every grouped output after a successful partition build. Leaving an
+	# identical model older than its settings would repeat this stage forever.
+	mv $(arc_dir)/model.mlir.tmp $(arc_dir)/model.mlir
+
+# Separate debug compilation keeps observation and waveform instrumentation out
+# of the optimized normal model.
+define arc_compile
+$$(eval $$(call arc_settings,$(1)/model-settings.json,PYTHON ARCILATOR CIRCT_OPT MLIR_TRANSLATE LLVM_OPT CXX ARC_MODEL_OPS ARC_PARTITION_PORTS ARCILATOR_FLAGS,$(1)))
+$$(eval $$(call arc_settings,$(1)/codegen-settings.json,PYTHON LLVM_OPT LLC CXX ARC_OPT_LEVEL ARC_LLC_OPT_LEVEL,$(1)))
+$(1)/model.ll $(1)/model.json &: $(arc_dir)/model.mlir $(sim_dir)/compiler/model.py $(sim_dir)/compiler/Model.cpp $(sim_dir)/compiler/ArcToLLVM.cpp $(sim_dir)/compiler/FloatMath.cpp $(sim_dir)/compiler/FormatStrings.cpp $(sim_dir)/compiler/NativePlusArgs.cpp $(sim_dir)/compiler/StateProperties.cpp $(sim_dir)/compiler/LowerArrays.cpp $(sim_dir)/compiler/RemoveI0Types.cpp $(sim_dir)/compiler/CompactStructs.cpp $(sim_dir)/compiler/partition.py $(sim_dir)/compiler/llvm.py $(sim_dir)/compiler/LargeReturns.cpp $(sim_dir)/compiler/LargeArguments.cpp $(1)/model-settings.json | $(1)
+	$(PYTHON) $(sim_dir)/compiler/model.py --input=$$< --state-file=$(1)/model.json.tmp --output=$(1)/model.ll.tmp \
+		--arcilator=$(ARCILATOR) --circt-opt=$(CIRCT_OPT) --mlir-translate=$(MLIR_TRANSLATE) \
+		--cache=$(gen_dir)/compiler --cxx="$(CXX)" --max-ops=$(ARC_MODEL_OPS) --max-ports=$(ARC_PARTITION_PORTS) \
+		-- $(ARCILATOR_FLAGS) $(2)
+	$(PYTHON) $(sim_dir)/compiler/llvm.py $(1)/model.ll.tmp --llvm-opt=$(LLVM_OPT) --cache=$(gen_dir)/compiler --cxx="$(CXX)"
+	mv $(1)/model.json.tmp $(1)/model.json
+	mv $(1)/model.ll.tmp $(1)/model.ll
+$(1)/model.o: $(1)/model.ll $(1)/codegen-settings.json $(sim_dir)/compiler/codegen.py $(sim_dir)/compiler/Codegen.cpp $(sim_dir)/compiler/LargeReturns.cpp $(sim_dir)/compiler/LargeArguments.cpp $(sim_dir)/compiler/partition.py
+	$(PYTHON) $(sim_dir)/compiler/codegen.py --input=$$< --output=$$@ --bitcode=$(1)/model.bc \
+		--llvm-opt=$(LLVM_OPT) --llc=$(LLC) --cache=$(gen_dir)/compiler --cxx="$(CXX)" \
+		--opt-level=$(ARC_OPT_LEVEL) --llc-opt-level=$(ARC_LLC_OPT_LEVEL)
+$(1)/adapter.cpp: $(1)/model.json $(arc_dir)/partition.json $(sim_dir)/adapter.py $(sim_dir)/trace.h
+	$(PYTHON) $(sim_dir)/adapter.py $$< $(arc_dir)/partition.json $$@
+endef
+$(eval $(call arc_compile,$(arc_dir),))
+$(eval $(call arc_compile,$(arc_debug_dir),--observe-registers --observe-wires --observe-ports))
+
+# The shared filelists include every selected blackbox's HDL and C++ sources,
+# plus externally supplied IP. The native generated modules are replaced by the
+# Arcilator shell; they must never also be compiled into the Verilator model.
+$(arc_dir)/blackboxes.f: $(sim_common_files) $(BB_MODS_FILELIST) $(EXT_FILELISTS) $(EXTRA_SIM_SOURCES) $(arc_dir)/filelist-settings.json $(if $(filter native,$(ARC_RUNTIME)),$(TOP_SMEMS_FILE) $(MODEL_SMEMS_FILE)) | $(arc_dir)
+	awk '!/\.(h|svh|conf)$$/' $(BB_MODS_FILELIST) $(EXT_FILELISTS) > $@
+	printf '%s\n' $(GEN_COLLATERAL_DIR)/TestDriver.v >> $@
+	$(if $(EXTRA_SIM_SOURCES),printf '%s\n' $(EXTRA_SIM_SOURCES) >> $@,true)
+	$(if $(filter native,$(ARC_RUNTIME)),printf '%s\n' $(TOP_SMEMS_FILE) $(MODEL_SMEMS_FILE) >> $@,true)
+
+ARC_CXXFLAGS = -I$(CIRCT_ROOT)/include $(SIM_CXXFLAGS) -I$(sim_dir) -DVERILATOR -DARCILATOR
+ARC_LDFLAGS = $(SIM_LDFLAGS) $(ARC_RUNTIME_LIBS)
+
+# The native scheduler and model bindings call the existing peripheral drivers
+# directly. This target does not invoke or link Verilator, including its DPI ABI.
+define arc_native_build
+$$(eval $$(call arc_settings,$(1)/native-build-settings.json,PYTHON CXX CC CIRCT_ROOT SIM_CXXFLAGS ARC_CFLAGS ARC_LDFLAGS,$(1)))
+$(1)/native-main.cpp: $(1)/model.json $(arc_dir)/partition.json $(arc_dir)/blackboxes.f $(arc_dir)/rtl.json $(sim_dir)/native.py $(sim_dir)/native_exports.py
+	$(PYTHON) $(sim_dir)/native.py $(1)/model.json $(arc_dir)/partition.json $$@ --filelist=$(arc_dir)/blackboxes.f
+$(2): $(1)/native-main.cpp $(1)/model.o $(arc_dir)/blackboxes.f $(sim_dir)/native_build.py $(wildcard $(sim_dir)/native/*.cpp $(sim_dir)/native/*.h $(sim_dir)/native/*.def $(sim_dir)/native/include/*.h) $(dramsim_lib) $(EXTRA_SIM_REQS) $(1)/native-build-settings.json
+	$(PYTHON) $(sim_dir)/native_build.py --filelist=$(arc_dir)/blackboxes.f \
+		--main=$(1)/native-main.cpp --model=$(1)/model.o \
+		--output=$$@ --build=$(1)/native-objects --cxx="$(CXX)" --cc="$(CC)" \
+		--cxxflags="-I$(CIRCT_ROOT)/include $(SIM_CXXFLAGS)" --cflags="$(ARC_CFLAGS)" \
+		--ldflags="$(ARC_LDFLAGS)" --jobs=$(ARC_BUILD_JOBS)
+endef
+$(eval $(call arc_native_build,$(arc_dir),$(sim_native)))
+$(eval $(call arc_native_build,$(arc_debug_dir),$(sim_native_debug)))
+ARC_VFLAGS = --main --timing --cc --exe --vpi --assert \
+	--unroll-count 256 --max-num-width 1048576 --x-assign fast --x-initial fast \
+	-Wno-fatal --top-module $(TB) --timescale 1ns/1ps \
+	$(SIM_PREPROC_DEFINES) +define+VERILATOR +define+ARCILATOR \
+	$(addprefix +incdir+,$(GEN_COLLATERAL_DIR) $(EXT_INCDIRS)) \
+	-f $(arc_dir)/blackboxes.f $(arc_dir)/ArcHarness.sv $(EXTRA_SIM_SOURCES) $(ARC_VERILATOR_FLAGS)
+
+$(eval $(call arc_settings,$(arc_dir)/hybrid-build-settings.json,PYTHON VERILATOR ARC_VFLAGS ARC_CXXFLAGS ARC_LDFLAGS ARC_CFLAGS CXX CC,$(arc_dir)))
+$(eval $(call arc_settings,$(arc_debug_dir)/hybrid-build-settings.json,PYTHON VERILATOR ARC_VFLAGS ARC_CXXFLAGS ARC_LDFLAGS ARC_CFLAGS CXX CC,$(arc_debug_dir)))
+
+$(sim_hybrid): $(arc_dir)/adapter.cpp $(arc_dir)/model.o $(arc_dir)/ArcHarness.sv $(arc_dir)/blackboxes.f $(sim_dir)/c_sources.py $(sim_dir)/native/wide.cpp $(sim_dir)/native/format.cpp $(sim_dir)/native/evaluation.cpp $(dramsim_lib) $(EXTRA_SIM_REQS) $(arc_dir)/hybrid-build-settings.json | check-arcilator-tools
+	$(require_riscv)
+	$(VERILATOR) $(ARC_VFLAGS) -Mdir $(arc_dir)/verilated -o $@ \
+		-CFLAGS "$(ARC_CXXFLAGS)" -LDFLAGS "$(ARC_LDFLAGS)" $(arc_dir)/adapter.cpp $(sim_dir)/native/wide.cpp $(sim_dir)/native/format.cpp $(sim_dir)/native/evaluation.cpp $(arc_dir)/model.o
+	$(PYTHON) $(sim_dir)/c_sources.py $(arc_dir)/verilated/V$(TB).mk $(arc_dir)/verilated/arc-c-sources.mk
+	$(MAKE) -C $(arc_dir)/verilated -f V$(TB).mk -f arc-c-sources.mk -j $(ARC_BUILD_JOBS) ARC_CFLAGS="$(ARC_CFLAGS)"
+
+$(sim_hybrid_debug): $(arc_debug_dir)/adapter.cpp $(arc_debug_dir)/model.o $(arc_dir)/ArcHarness.sv $(arc_dir)/blackboxes.f $(sim_dir)/c_sources.py $(sim_dir)/native/wide.cpp $(sim_dir)/native/format.cpp $(sim_dir)/native/evaluation.cpp $(dramsim_lib) $(EXTRA_SIM_REQS) $(arc_debug_dir)/hybrid-build-settings.json | check-arcilator-tools
+	$(require_riscv)
+	$(VERILATOR) $(ARC_VFLAGS) +define+DEBUG --trace -Mdir $(arc_debug_dir)/verilated -o $@ \
+		-CFLAGS "$(ARC_CXXFLAGS) -DARC_TRACE" -LDFLAGS "$(ARC_LDFLAGS)" $(arc_debug_dir)/adapter.cpp $(sim_dir)/native/wide.cpp $(sim_dir)/native/format.cpp $(sim_dir)/native/evaluation.cpp $(arc_debug_dir)/model.o
+	$(PYTHON) $(sim_dir)/c_sources.py $(arc_debug_dir)/verilated/V$(TB).mk $(arc_debug_dir)/verilated/arc-c-sources.mk
+	$(MAKE) -C $(arc_debug_dir)/verilated -f V$(TB).mk -f arc-c-sources.mk -j $(ARC_BUILD_JOBS) ARC_CFLAGS="$(ARC_CFLAGS)"
+
+.PHONY: clean clean-sim clean-sim-debug
+clean:
+	rm -rf $(gen_dir) $(sim_prefix)-*
+clean-sim:
+	rm -rf $(arc_dir) $(sim)
+clean-sim-debug:
+	rm -rf $(arc_debug_dir) $(sim_debug)
+
+# Compiled fixtures require no Scala elaboration. The SV comparison is optional.
+.PHONY: test native-test hybrid-test frontend-test llvm-native-test
+test: native-test
+hybrid-test:
+	CIRCT_BIN=$(CIRCT_BIN) VERILATOR=$(VERILATOR) $(PYTHON) $(sim_dir)/tests/run.py
+frontend-test:
+	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/frontend_compat.py --circt-bin=$(CIRCT_BIN)
+llvm-native-test:
+	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/codegen.py
+	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/large_returns.py
+	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/large_returns_cfg.py
+	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/large_arguments.py
+	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/compact_structs.py --input=$(sim_dir)/generated-src/large-return-test/input.ll --reference=$(sim_dir)/generated-src/large-return-test/check.cpp
+native-test: frontend-test llvm-native-test
+	$(PYTHON) $(sim_dir)/tests/rtl_libraries.py
+	CIRCT_BIN=$(CIRCT_BIN) $(PYTHON) $(sim_dir)/tests/run_native.py
+
+# Use the selected configuration's original generated cipher driver.
+.PHONY: caliptra-aes-test
+caliptra-aes-test: $(arc_dir)/design.mlir
+	CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/caliptra_aes.py --circt-bin=$(CIRCT_BIN) \
+		--design=$(arc_dir)/design.mlir --work=$(arc_dir)/aes-regression
+
+# Full Chipyard elaboration/build/runtime tests, with logs and a JSON report.
+ARC_TEST_CASES ?=
+ARC_TEST_TIMEOUT ?= 1800
+.PHONY: integration-test
+integration-test: check-arcilator-tools
+	$(require_riscv)
+	CIRCT_BIN=$(CIRCT_BIN) RISCV=$(RISCV) $(PYTHON) $(sim_dir)/tests/integration.py --runtime $(ARC_RUNTIME) --timeout $(ARC_TEST_TIMEOUT) $(if $(ARC_TEST_CASES),--cases $(ARC_TEST_CASES))
+
+.PHONY: check-arcilator-tools
+check-arcilator-tools:
+	@for tool in $(ARC_FIRTOOL) $(CIRCT_VERILOG) $(CIRCT_OPT) $(ARCILATOR) $(LLVM_OPT) $(LLC) $(LLVM_CONFIG) $(MLIR_TRANSLATE); do \
+	  command -v "$$tool" >/dev/null 2>&1 || { echo "Missing $$tool. Set CIRCT_BIN to a full CIRCT installation and activate the Chipyard environment." >&2; exit 1; }; \
+	done
+	@test -r $(CIRCT_ROOT)/include/circt/Dialect/Arc/Runtime/ArcRuntime.h -a -r $(CIRCT_ROOT)/lib/libCIRCTArcRuntime.a || \
+	  { echo "CIRCT_ROOT=$(CIRCT_ROOT) must contain the matching CIRCT headers and runtime libraries." >&2; exit 1; }
+	@$(ARC_FIRTOOL) --help | grep -q -- --lower-to-core || \
+	  { echo "The native firtool needs --lower-to-core; use a compatible full CIRCT release (tested: 1.162.0)." >&2; exit 1; }

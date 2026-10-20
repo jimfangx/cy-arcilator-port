@@ -1,0 +1,48 @@
+--- a/MooreToCore.cpp
++++ b/MooreToCore.cpp
+@@ -1459,6 +1459,23 @@
+     Type inputType =
+         cast<llhd::RefType>(adaptor.getInput().getType()).getNestedType();
+ 
++    // Retain aggregate bit projections until the native reference-memory
++    // lowering. Keeping the full index avoids wrapping invalid wide indices.
++    auto originalType =
++        cast<moore::RefType>(op.getInput().getType()).getNestedType();
++    if (isa<moore::StructType, moore::UnionType>(originalType) &&
++        !cast<moore::PackedType>(originalType).containsTimeType() &&
++        isa<IntegerType>(cast<llhd::RefType>(resultType).getNestedType())) {
++      auto low = hw::ConstantOp::create(
++          rewriter, op.getLoc(), rewriter.getI64Type(), adaptor.getLowBit());
++      auto ref = UnrealizedConversionCastOp::create(
++          rewriter, op.getLoc(), TypeRange{resultType},
++          ValueRange{adaptor.getInput(), low});
++      ref->setAttr("chipyard.packed_ref_slice", rewriter.getUnitAttr());
++      rewriter.replaceOp(op, ref.getResults());
++      return success();
++    }
++
+     if (auto intType = dyn_cast<IntegerType>(inputType)) {
+       int64_t width = hw::getBitWidth(inputType);
+       if (width == -1)
+@@ -1547,6 +1564,21 @@
+     Type resultType = typeConverter->convertType(op.getResult().getType());
+     Type inputType =
+         cast<llhd::RefType>(adaptor.getInput().getType()).getNestedType();
++
++    // Retain aggregate bit projections until the native reference-memory
++    // lowering. Keeping the full index avoids wrapping invalid wide indices.
++    auto originalType =
++        cast<moore::RefType>(op.getInput().getType()).getNestedType();
++    if (isa<moore::StructType, moore::UnionType>(originalType) &&
++        !cast<moore::PackedType>(originalType).containsTimeType() &&
++        isa<IntegerType>(cast<llhd::RefType>(resultType).getNestedType())) {
++      auto ref = UnrealizedConversionCastOp::create(
++          rewriter, op.getLoc(), TypeRange{resultType},
++          ValueRange{adaptor.getInput(), adaptor.getLowBit()});
++      ref->setAttr("chipyard.packed_ref_slice", rewriter.getUnitAttr());
++      rewriter.replaceOp(op, ref.getResults());
++      return success();
++    }
+ 
+     if (auto intType = dyn_cast<IntegerType>(inputType)) {
+       int64_t width = hw::getBitWidth(inputType);

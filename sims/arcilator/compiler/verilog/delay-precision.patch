@@ -1,0 +1,123 @@
+--- a/ImportVerilogInternals.h
++++ b/ImportVerilogInternals.h
+@@ -334,6 +334,8 @@
+   // Convert an expression AST node to MLIR ops.
+   Value convertRvalueExpression(const slang::ast::Expression &expr,
+                                 Type requiredType = {});
++  // Delay expressions round once to the lexical timeprecision.
++  Value convertDelayExpression(const slang::ast::Expression &expr);
+   Value convertLvalueExpression(const slang::ast::Expression &expr);
+ 
+   // Convert an assertion expression AST node to MLIR ops.
+--- a/Expressions.cpp
++++ b/Expressions.cpp
+@@ -1197,8 +1197,7 @@
+     if (expr.timingControl) {
+       // Handle regular time delays.
+       if (auto *ctrl = expr.timingControl->as_if<slang::ast::DelayControl>()) {
+-        auto delay = context.convertRvalueExpression(
+-            ctrl->expr, moore::TimeType::get(builder.getContext()));
++        auto delay = context.convertDelayExpression(ctrl->expr);
+         if (!delay)
+           return {};
+         auto assignOp = moore::DelayedNonBlockingAssignOp::create(
+@@ -1805,29 +1804,13 @@
+ 
+   // Handle time literals.
+   Value visit(const slang::ast::TimeLiteral &expr) {
+-    // The time literal is expressed in the current time scale. Determine the
+-    // conversion factor to convert the literal from the current time scale into
+-    // femtoseconds, and round the scaled value to femtoseconds.
+-    double scale = getTimeScaleInFemtoseconds(context);
+-    double value = std::round(expr.getValue() * scale);
+-    assert(value >= 0.0);
+-
+-    // Check that the value does not exceed what we can represent in the IR.
+-    // Casting the maximum uint64 value to double changes its value from
+-    // 18446744073709551615 to 18446744073709551616, which makes the comparison
+-    // overestimate the largest number we can represent. To avoid this, round
+-    // the maximum value down to the closest number that only has the front 53
+-    // bits set. This matches the mantissa of a double, plus the implicit
+-    // leading 1, ensuring that we can accurately represent the limit.
+-    static constexpr uint64_t limit =
+-        (std::numeric_limits<uint64_t>::max() >> 11) << 11;
+-    if (value > limit) {
+-      mlir::emitError(loc) << "time value is larger than " << limit << " fs";
+-      return {};
+-    }
+-
+-    return moore::ConstantTimeOp::create(builder, loc,
+-                                         static_cast<uint64_t>(value));
++    // Slang gives a realtime literal in lexical timeunits. Keep its fraction
++    // until the consuming delay rounds to timeprecision, or a time variable
++    // applies its normal integral conversion.
++    return moore::ConstantRealOp::create(
++        builder, loc, moore::RealType::get(builder.getContext(),
++                                         moore::RealWidth::f64),
++        builder.getF64FloatAttr(expr.getValue()));
+   }
+ 
+   // Handle replications.
+@@ -2972,6 +2955,38 @@
+     value =
+         materializeConversion(requiredType, value, expr.type->isSigned(), loc);
+   return value;
++}
++
++Value Context::convertDelayExpression(const slang::ast::Expression &expr) {
++  auto loc = convertLocation(expr.sourceRange);
++  auto value = convertRvalueExpression(expr);
++  if (!value)
++    return {};
++  auto timeType = moore::TimeType::get(getContext());
++  if (!isa<moore::RealType>(value.getType()))
++    return materializeConversion(timeType, value, expr.type->isSigned(), loc);
++
++  auto inFS = [](slang::TimeScaleValue scale) {
++    auto result = static_cast<uint64_t>(scale.magnitude);
++    for (unsigned unit = static_cast<unsigned>(scale.unit); unit < 5; ++unit)
++      result *= 1000;
++    return result;
++  };
++  uint64_t precision = inFS(timeScale.precision);
++  uint64_t scale = getTimeScaleInFemtoseconds(*this) / precision;
++  auto realType = moore::RealType::get(getContext(), moore::RealWidth::f64);
++  value = materializeConversion(realType, value, false, loc);
++  auto factor = moore::ConstantRealOp::create(
++      builder, loc, realType, builder.getF64FloatAttr(scale));
++  auto scaled = builder.createOrFold<moore::MulRealOp>(loc, value, factor);
++  auto integer = moore::IntType::get(getContext(), 64, Domain::TwoValued);
++  Value ticks = builder.createOrFold<moore::RealToIntOp>(loc, integer, scaled);
++  if (precision != 1) {
++    auto tickFS = moore::ConstantOp::create(builder, loc, integer, precision);
++    ticks = builder.createOrFold<moore::MulOp>(loc, ticks, tickFS);
++  }
++  auto logic = moore::IntToLogicOp::create(builder, loc, ticks);
++  return moore::LogicToTimeOp::create(builder, loc, logic);
+ }
+ 
+ Value Context::convertLvalueExpression(const slang::ast::Expression &expr) {
+--- a/TimingControls.cpp
++++ b/TimingControls.cpp
+@@ -99,8 +99,7 @@
+ 
+   // Handle delays.
+   LogicalResult visit(const slang::ast::DelayControl &ctrl) {
+-    auto delay = context.convertRvalueExpression(
+-        ctrl.expr, moore::TimeType::get(builder.getContext()));
++    auto delay = context.convertDelayExpression(ctrl.expr);
+     if (!delay)
+       return failure();
+     moore::WaitDelayOp::create(builder, loc, delay);
+--- a/Structure.cpp
++++ b/Structure.cpp
+@@ -1010,8 +1010,7 @@
+                ctrl && !ctrl->expr2 && !ctrl->expr3)
+         delayExpr = &ctrl->expr1;
+       if (delayExpr) {
+-        auto delay = context.convertRvalueExpression(
+-            *delayExpr, moore::TimeType::get(builder.getContext()));
++        auto delay = context.convertDelayExpression(*delayExpr);
+         if (!delay)
+           return failure();
+         moore::DelayedContinuousAssignOp::create(builder, loc, lhs, rhs, delay);

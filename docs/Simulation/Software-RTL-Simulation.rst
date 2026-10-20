@@ -10,6 +10,33 @@ Verilator (Open-Source)
 The Chipyard framework can download, build, and execute simulations using Verilator.
 
 
+Arcilator (Experimental)
+-----------------------
+
+The ``sims/arcilator`` backend compiles Chisel-generated hardware with CIRCT's
+Arcilator and LLVM. Its default native runtime schedules clocks and asynchronous
+register banks and connects the original C/C++ peripheral drivers, including
+DRAMSim2, SimUART, SimTSI, SimJTAG, and SimDTM. It does not require Verilator to
+build or run. Ordinary RTL blackboxes can be imported through CIRCT's Verilog
+frontend. An optional ``ARC_RUNTIME=hybrid`` reference still uses Verilator.
+
+Activate the usual Chipyard environment and install a matching full CIRCT tool
+suite with its headers and libraries. The current integration is tested with
+CIRCT firtool-1.162.0. For example:
+
+.. code-block:: shell
+
+    cd sims/arcilator
+    make CIRCT_BIN=/path/to/circt/bin CONFIG=RocketConfig
+    make CIRCT_BIN=/path/to/circt/bin CONFIG=RocketConfig run-binary-fast \
+        BINARY=/absolute/path/to/program.riscv
+
+The backend uses the shared configuration and simulation targets. Its
+``README.md`` documents the partition, tool requirements, native waveforms,
+validation results, and current limitations. Validation across all Chipyard
+configurations and peripheral combinations remains in progress.
+
+
 Synopsys VCS (License Required)
 --------------------------------
 
