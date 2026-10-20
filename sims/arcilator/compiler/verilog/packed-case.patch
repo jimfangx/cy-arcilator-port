@@ -1,0 +1,28 @@
+--- a/Statements.cpp
++++ b/Statements.cpp
+@@ -492,6 +492,13 @@
+     auto caseExpr = context.convertRvalueExpression(caseStmt.expr);
+     if (!caseExpr)
+       return failure();
++    // Case comparisons operate on the bit representation of packed aggregates.
++    // Keep real operands on their ordinary-equality path below.
++    if (isa<moore::PackedType>(caseExpr.getType())) {
++      caseExpr = context.convertToSimpleBitVector(caseExpr);
++      if (!caseExpr)
++        return failure();
++    }
+ 
+     // Check each case individually. This currently ignores the `unique`,
+     // `unique0`, and `priority` modifiers which would allow for additional
+@@ -524,6 +531,11 @@
+           if (!value)
+             return failure();
+           itemLoc = value.getLoc();
++          if (isa<moore::PackedType>(value.getType())) {
++            value = context.convertToSimpleBitVector(value);
++            if (!value)
++              return failure();
++          }
+ 
+           // Take note if the expression is a constant.
+           auto maybeConst = value;

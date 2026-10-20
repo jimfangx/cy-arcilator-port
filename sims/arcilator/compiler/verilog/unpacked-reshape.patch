@@ -1,0 +1,57 @@
+--- a/Expressions.cpp
++++ b/Expressions.cpp
+@@ -3176,6 +3176,28 @@
+   return casted;
+ }
+ 
++// Fixed-size array assignments preserve element positions while reshaping
++// assignment-compatible packed elements. Keep this separate from width-changing
++// element conversions: Moore integers do not retain the element signedness.
++static bool isPackedArrayReshape(Type source, Type destination) {
++  if (source == destination)
++    return true;
++  auto srcArray = dyn_cast<moore::UnpackedArrayType>(source);
++  auto dstArray = dyn_cast<moore::UnpackedArrayType>(destination);
++  if (srcArray || dstArray)
++    return srcArray && dstArray && srcArray.getSize() == dstArray.getSize() &&
++           isPackedArrayReshape(srcArray.getElementType(),
++                                dstArray.getElementType());
++  auto srcPacked = dyn_cast<moore::PackedType>(source);
++  auto dstPacked = dyn_cast<moore::PackedType>(destination);
++  if (!srcPacked || !dstPacked || srcPacked.containsTimeType() ||
++      dstPacked.containsTimeType())
++    return false;
++  auto srcBits = srcPacked.getSimpleBitVector();
++  auto dstBits = dstPacked.getSimpleBitVector();
++  return srcBits && dstBits && srcBits.getWidth() == dstBits.getWidth();
++}
++
+ Value Context::materializeConversion(Type type, Value value, bool isSigned,
+                                      Location loc, bool fallible) {
+   // Nothing to do if the types are already equal.
+@@ -3192,6 +3214,25 @@
+     if (type == moore::IntType::getInt(value.getContext(), 1))
+       return moore::ConstantOp::create(builder, loc, cast<moore::IntType>(type),
+                                        0);
++  }
++
++  auto srcArray = dyn_cast<moore::UnpackedArrayType>(value.getType());
++  auto dstArray = dyn_cast<moore::UnpackedArrayType>(type);
++  if (srcArray && dstArray &&
++      isPackedArrayReshape(srcArray, dstArray)) {
++    SmallVector<Value> elements;
++    // ArrayCreate operands run from most to least significant, whereas an
++    // Extract index addresses from the least significant element.
++    for (uint64_t i = srcArray.getSize(); i > 0; --i) {
++      auto element = moore::ExtractOp::create(
++          builder, loc, srcArray.getElementType(), value, i - 1);
++      auto converted = materializeConversion(dstArray.getElementType(), element,
++                                             false, loc, fallible);
++      if (!converted)
++        return {};
++      elements.push_back(converted);
++    }
++    return builder.createOrFold<moore::ArrayCreateOp>(loc, dstArray, elements);
+   }
+ 
+   // Handle packed types which can be converted to a simple bit vector. This

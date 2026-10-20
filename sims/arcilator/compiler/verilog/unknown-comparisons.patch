@@ -1,0 +1,143 @@
+--- a/MooreToCore.cpp
++++ b/MooreToCore.cpp
+@@ -4276,6 +4276,53 @@
+   return std::make_unique<MooreToCorePass>();
+ }
+ 
++static std::optional<FVInt> caseConstant(Value value) {
++  auto *op = value.getDefiningOp();
++  if (!op)
++    return std::nullopt;
++  if (auto constant = dyn_cast<moore::ConstantOp>(op))
++    return constant.getValue();
++  if (isa<moore::PackedToSBVOp, moore::SBVToPackedOp, moore::IntToLogicOp,
++          moore::ToBuiltinIntOp, moore::FromBuiltinIntOp>(op))
++    return caseConstant(op->getOperand(0));
++  if (isa<moore::LogicToIntOp>(op)) {
++    if (auto source = caseConstant(op->getOperand(0)))
++      return FVInt(source->toAPInt(false));
++    return std::nullopt;
++  }
++  if (isa<moore::ConcatOp>(op)) {
++    std::optional<FVInt> result;
++    for (auto operand : op->getOperands()) {
++      auto part = caseConstant(operand);
++      if (!part)
++        return std::nullopt;
++      if (!result)
++        result = *part;
++      else
++        result = FVInt(result->getRawValue().concat(part->getRawValue()),
++                       result->getRawUnknown().concat(part->getRawUnknown()));
++    }
++    return result;
++  }
++  if (isa<moore::ReplicateOp>(op)) {
++    auto source = caseConstant(op->getOperand(0));
++    auto width = cast<moore::IntType>(value.getType()).getWidth();
++    if (!source || !source->getBitWidth() || width % source->getBitWidth())
++      return std::nullopt;
++    return FVInt(llvm::APInt::getSplat(width, source->getRawValue()),
++                 llvm::APInt::getSplat(width, source->getRawUnknown()));
++  }
++  if (isa<moore::ZExtOp, moore::SExtOp, moore::TruncOp>(op)) {
++    auto source = caseConstant(op->getOperand(0));
++    if (!source)
++      return std::nullopt;
++    auto width = cast<moore::IntType>(value.getType()).getWidth();
++    return isa<moore::SExtOp>(op) ? source->sextOrTrunc(width)
++                                  : source->zextOrTrunc(width);
++  }
++  return std::nullopt;
++}
++
+ /// This is the main entrypoint for the Moore to Core conversion pass.
+ void MooreToCorePass::runOnOperation() {
+   MLIRContext &context = getContext();
+@@ -4287,6 +4334,25 @@
+   IRRewriter rewriter(module);
+   (void)mlir::eraseUnreachableBlocks(rewriter, module->getRegions());
+ 
++  // Core currently represents every runtime bit with two states and maps X/Z
++  // constants to zero. Resolve case comparisons with an unknown literal before
++  // that conversion discards the literal's mask. In particular, the importer's
++  // $isunknown reduction-XOR === X must be false for a known runtime value,
++  // rather than becoming a parity comparison with zero. Constant-to-constant
++  // comparisons retain their complete four-state value, including X versus Z.
++  module.walk([&](Operation *op) {
++    if (!isa<CaseEqOp, CaseNeOp>(op))
++      return;
++    auto lhs = caseConstant(op->getOperand(0));
++    auto rhs = caseConstant(op->getOperand(1));
++    if ((!lhs || !lhs->hasUnknown()) && (!rhs || !rhs->hasUnknown()))
++      return;
++    bool equal = lhs && rhs && *lhs == *rhs;
++    bool result = isa<CaseNeOp>(op) ? !equal : equal;
++    rewriter.setInsertionPoint(op);
++    rewriter.replaceOpWithNewOp<ConstantOp>(op, Domain::TwoValued, result);
++  });
++
+   TypeConverter typeConverter;
+   populateTypeConversion(typeConverter);
+ 
+--- a/Expressions.cpp
++++ b/Expressions.cpp
+@@ -42,6 +42,11 @@
+ /// Returns a Moore i1 result: 1 if any bit is unknown, 0 otherwise.
+ static Value getIsUnknown(OpBuilder &builder, Location loc, Value value,
+                           moore::IntType valTy, MLIRContext *ctx) {
++  // A two-state value cannot contain X/Z; comparing it with a four-state
++  // literal would also violate case_eq's same-type operand requirement.
++  if (valTy.getDomain() == moore::Domain::TwoValued)
++    return moore::ConstantOp::create(builder, loc, moore::Domain::TwoValued,
++                                     false);
+   Value bitVal = value;
+   if (valTy.getWidth() > 1) {
+     auto mooreI1Type = moore::IntType::get(ctx, 1, valTy.getDomain());
+@@ -1610,10 +1615,24 @@
+     if (rhsIsClass || lhsIsClass || rhsIsChandle || lhsIsChandle)
+       return visitHandleBOp(expr);
+ 
+-    auto lhs = context.convertRvalueExpression(expr.left());
++    // Preserve literal X/Z masks in case comparisons, including constants
++    // expressed through replication, concatenation, casts or arithmetic.
++    // Their Moore operations do not all have constant folders.
++    bool caseComparison = expr.op == slang::ast::BinaryOperator::CaseEquality ||
++                          expr.op == slang::ast::BinaryOperator::CaseInequality;
++    auto convertOperand = [&](const slang::ast::Expression &operand) -> Value {
++      if (caseComparison && operand.type->isIntegral()) {
++        auto constant = context.evaluateConstant(operand);
++        if (auto value =
++                context.materializeConstant(constant, *operand.type, loc))
++          return value;
++      }
++      return context.convertRvalueExpression(operand);
++    };
++    auto lhs = convertOperand(expr.left());
+     if (!lhs)
+       return {};
+-    auto rhs = context.convertRvalueExpression(expr.right());
++    auto rhs = convertOperand(expr.right());
+     if (!rhs)
+       return {};
+ 
+--- a/Statements.cpp
++++ b/Statements.cpp
+@@ -534,7 +534,16 @@
+           if (!cond)
+             return failure();
+         } else {
+-          auto value = context.convertRvalueExpression(*expr);
++          // Keep complete four-state constants in case patterns before
++          // replication, arithmetic or packed conversions can hide their mask.
++          // Dynamic item expressions retain their original evaluation order.
++          Value value;
++          if (expr->type->isIntegral()) {
++            auto constant = context.evaluateConstant(*expr);
++            value = context.materializeConstant(constant, *expr->type, itemLoc);
++          }
++          if (!value)
++            value = context.convertRvalueExpression(*expr);
+           if (!value)
+             return failure();
+           itemLoc = value.getLoc();

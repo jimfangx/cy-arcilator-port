@@ -1,0 +1,15 @@
+--- a/Structure.cpp
++++ b/Structure.cpp
+@@ -3755,8 +3755,10 @@
+     symName += "::";
+     symName += var.name;
+   } else {
+-    guessNamespacePrefix(var.getParentScope()->asSymbol(), symName);
+-    symName += var.name;
++    // Globals can be reached from independently imported module variants.
++    // Keep their original qualified identity, including static function locals,
++    // instead of assigning order-dependent names such as counter and counter_0.
++    symName = var.getHierarchicalPath();
+   }
+ 
+   // Determine the type of the variable.

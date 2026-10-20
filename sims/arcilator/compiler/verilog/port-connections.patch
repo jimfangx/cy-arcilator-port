@@ -1,0 +1,46 @@
+--- a/Structure.cpp
++++ b/Structure.cpp
+@@ -695,12 +695,14 @@
+     // interface-modport ports interleave in declaration order.
+     SmallVector<Value> inputValues(moduleLowering->numExplicitInputs);
+     SmallVector<Value> outputValues(moduleLowering->numExplicitOutputs);
++    SmallVector<bool> outputSigned(moduleLowering->numExplicitOutputs, false);
+ 
+     for (auto &port : moduleLowering->ports) {
+       auto value = portValues.lookup(&port.ast);
+-      if (port.ast.direction == ArgumentDirection::Out)
++      if (port.ast.direction == ArgumentDirection::Out) {
+         outputValues[*port.outputIdx] = value;
+-      else
++        outputSigned[*port.outputIdx] = port.ast.getType().isSigned();
++      } else
+         inputValues[*port.inputIdx] = value;
+     }
+ 
+@@ -738,6 +740,8 @@
+                << "unresolved interface port signal `" << fp.name << "`";
+       if (fp.direction == hw::ModulePort::Output) {
+         outputValues[*fp.outputIdx] = val;
++        if (auto *symbol = fp.bodySym->as_if<slang::ast::ValueSymbol>())
++          outputSigned[*fp.outputIdx] = symbol->getType().isSigned();
+       } else {
+         // For input ports, if the value is a ref (from VariableOp/NetOp),
+         // read it to get the rvalue, unless the port itself expects a ref.
+@@ -835,13 +839,14 @@
+       }
+ 
+     // Assign output values from the instance to the connected expression.
+-    for (auto [lvalue, output] : llvm::zip(outputValues, inst.getOutputs())) {
++    for (auto [lvalue, output, isSigned] :
++         llvm::zip(outputValues, inst.getOutputs(), outputSigned)) {
+       if (!lvalue)
+         continue;
+       Value rvalue = output;
+       auto dstType = cast<moore::RefType>(lvalue.getType()).getNestedType();
+-      // TODO: This should honor signedness in the conversion.
+-      rvalue = context.materializeConversion(dstType, rvalue, false, loc);
++      // Output assignment extension follows the declared source port type.
++      rvalue = context.materializeConversion(dstType, rvalue, isSigned, loc);
+       if (!rvalue)
+         return failure();
+       moore::ContinuousAssignOp::create(builder, loc, lvalue, rvalue);

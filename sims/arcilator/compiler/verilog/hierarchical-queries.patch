@@ -1,0 +1,50 @@
+--- a/HierarchicalNames.cpp
++++ b/HierarchicalNames.cpp
+@@ -7,6 +7,7 @@
+ //===----------------------------------------------------------------------===//
+ 
+ #include "ImportVerilogInternals.h"
++#include "slang/ast/SystemSubroutine.h"
+ 
+ using namespace circt;
+ using namespace ImportVerilog;
+@@ -21,6 +22,16 @@
+       DenseSet<const slang::ast::InstanceBodySymbol *> &visitedBodies)
+       : context(context), outermostModule(outermostModule),
+         visitedBodies(visitedBodies) {}
++
++  // A fixed-size $bits argument is a type query, not a read of the
++  // referenced signal. Do not route it as a live cross-module reference.
++  void handle(const slang::ast::CallExpression &expr) {
++    if (auto *system = std::get_if<slang::ast::CallExpression::SystemCallInfo>(&expr.subroutine);
++        system && system->subroutine->name == "$bits" &&
++        !expr.arguments().empty() && expr.arguments().front()->type->isFixedSize())
++      return;
++    visitDefault(expr);
++  }
+ 
+   void handle(const slang::ast::InstanceSymbol &instNode) {
+     traverseInstanceBody(context, instNode, visitedBodies);
+--- a/CaptureAnalysis.cpp
++++ b/CaptureAnalysis.cpp
+@@ -7,6 +7,7 @@
+ //===----------------------------------------------------------------------===//
+ 
+ #include "CaptureAnalysis.h"
++#include "slang/ast/SystemSubroutine.h"
+ #include "slang/ast/ASTVisitor.h"
+ #include "llvm/ADT/MapVector.h"
+ #include "llvm/Support/SaveAndRestore.h"
+@@ -190,6 +191,12 @@
+ 
+   /// Record call graph edges when we see a function call.
+   void handle(const CallExpression &expr) {
++    // Fixed-size type queries never evaluate or capture their operand.
++    if (auto *system = std::get_if<CallExpression::SystemCallInfo>(&expr.subroutine);
++        system && system->subroutine->name == "$bits" &&
++        !expr.arguments().empty() && expr.arguments().front()->type->isFixedSize())
++      return;
++
+     if (currentFunc)
+       if (auto *const *callee =
+               std::get_if<const SubroutineSymbol *>(&expr.subroutine))

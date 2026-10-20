@@ -1,0 +1,15 @@
+--- a/MooreToCore.cpp
++++ b/MooreToCore.cpp
+@@ -2164,8 +2164,11 @@
+   LogicalResult
+   matchAndRewrite(RealToIntOp op, OpAdaptor adaptor,
+                   ConversionPatternRewriter &rewriter) const override {
++    // Moore real-to-integral casts round to nearest, ties away from zero.
++    // FPToSI itself truncates, so round before converting the representation.
++    auto rounded = math::RoundOp::create(rewriter, op.getLoc(), adaptor.getInput());
+     rewriter.replaceOpWithNewOp<arith::FPToSIOp>(
+-        op, typeConverter->convertType(op.getType()), adaptor.getInput());
++        op, typeConverter->convertType(op.getType()), rounded);
+     return success();
+   }
+ };

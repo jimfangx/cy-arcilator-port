@@ -61,33 +61,124 @@ def find_include(file_name, inc_dirs):
     return None
 
 
+class IncludeHistory:
+    """An include dominates another only in the same or an enclosing branch."""
+
+    def __init__(self):
+        self.seen = {}
+        self.branches = []
+        self.next_branch = 0
+        self.macro_continuation = False
+        self.block_comment = False
+
+    def directive(self, line):
+        # Do not mistake directives inside comments, strings, or multiline
+        # macro bodies for conditional nesting in the surrounding source.
+        code = []
+        quoted = escaped = False
+        i = 0
+        while i < len(line):
+            char = line[i]
+            pair = line[i:i + 2]
+            if self.block_comment:
+                if pair == "*/":
+                    self.block_comment = False
+                    code.append("  ")
+                    i += 2
+                else:
+                    code.append("\n" if char == "\n" else " ")
+                    i += 1
+            elif quoted:
+                code.append(char)
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    quoted = False
+                i += 1
+            elif pair == "//":
+                break
+            elif pair == "/*":
+                self.block_comment = True
+                code.append("  ")
+                i += 2
+            else:
+                code.append(char)
+                quoted = char == '"'
+                i += 1
+        code = "".join(code)
+        continued = line.rstrip("\r\n").endswith("\\")
+        if self.macro_continuation:
+            self.macro_continuation = continued
+            return ""
+        if re.match(r"^\s*`define\b", code):
+            self.macro_continuation = continued
+            return code
+        match = re.match(r"^\s*`(ifdef|ifndef|elsif|else|endif)\b", code)
+        if match:
+            directive = match.group(1)
+            if directive in ("ifdef", "ifndef"):
+                self.branches.append((self.next_branch, 0))
+                self.next_branch += 1
+            elif directive == "endif":
+                if self.branches:
+                    self.branches.pop()
+            elif self.branches:
+                block, branch = self.branches[-1]
+                self.branches[-1] = (block, branch + 1)
+        return code
+
+    def already_included(self, name):
+        context = tuple(self.branches)
+        previous = self.seen.setdefault(name, [])
+        if any(context[:len(parent)] == parent for parent in previous):
+            return True
+        previous.append(context)
+        return False
+
+
 def process_helper(in_fname, out_f, inc_dirs, replaced_includes):
     """
     Helper function to DFS through include files and replace includes.
     """
-    include_regex = re.compile(r"^ *`include +\"(.*)\"")
+    include_regex = re.compile(r'^\s*`include\s+"([^"]+)"')
     # slurp the input file.
     # this avoids having a bunch of fds open during recursion
     with open(in_fname, "r", encoding="utf-8") as in_file:
         lines = in_file.readlines()
 
+    # Comments and macro continuations belong to each physical file. In
+    # particular, a trailing comment on an include line must not hide the
+    # included file's own directives. Conditional branches remain shared.
+    outer_comment = replaced_includes.block_comment
+    outer_macro = replaced_includes.macro_continuation
+    replaced_includes.block_comment = False
+    replaced_includes.macro_continuation = False
     for num, line in enumerate(lines, 1):
-        match = re.match(include_regex, line)
+        match = re.match(include_regex, replaced_includes.directive(line))
         if not match or match.group(1) == "uvm_macros.svh":
             # copy the line as is
             out_f.write(line)
             continue
-        if match.group(1) in replaced_includes:
+        # Retain comments surrounding the directive, including comments that
+        # span caller lines. The comment-stripped view preserves columns.
+        directive_start = line.index("`include", match.start(), match.end())
+        out_f.write(line[:directive_start])
+        if replaced_includes.already_included(match.group(1)):
             print_info("Skipping duplicate include")
+            out_f.write(line[match.end():])
             continue
 
-        print_info(
-            f"Replacing includes for {match.group(1)}" f" at line {num}"
-        )
+        print_info(f"Replacing includes for {match.group(1)}"
+                   f" at line {num}")
         # search for include and replace
         inc_file_name = find_include(match.group(1), inc_dirs)
-        replaced_includes.add(match.group(1))
         process_helper(inc_file_name, out_f, inc_dirs, replaced_includes)
+        out_f.write("\n" + line[match.end():])
+
+    replaced_includes.block_comment = outer_comment
+    replaced_includes.macro_continuation = outer_macro
 
 
 def process(in_fname, out_fname, inc_dirs=None):
@@ -99,7 +190,7 @@ def process(in_fname, out_fname, inc_dirs=None):
         out_fname (str): output file name
         inc_dirs (list): list of directories to search for includes
     """
-    replaced_includes = set()
+    replaced_includes = IncludeHistory()
     with open(out_fname, "w", encoding="utf-8") as out_file:
         process_helper(in_fname, out_file, inc_dirs, replaced_includes)
 

@@ -1,0 +1,20 @@
+--- a/Structure.cpp
++++ b/Structure.cpp
+@@ -1003,9 +1003,15 @@
+ 
+     // Handle delayed assignments.
+     if (auto *timingCtrl = assignNode.getDelay()) {
+-      if (auto *ctrl = timingCtrl->as_if<slang::ast::DelayControl>()) {
++      const slang::ast::Expression *delayExpr = nullptr;
++      if (auto *ctrl = timingCtrl->as_if<slang::ast::DelayControl>())
++        delayExpr = &ctrl->expr;
++      else if (auto *ctrl = timingCtrl->as_if<slang::ast::Delay3Control>();
++               ctrl && !ctrl->expr2 && !ctrl->expr3)
++        delayExpr = &ctrl->expr1;
++      if (delayExpr) {
+         auto delay = context.convertRvalueExpression(
+-            ctrl->expr, moore::TimeType::get(builder.getContext()));
++            *delayExpr, moore::TimeType::get(builder.getContext()));
+         if (!delay)
+           return failure();
+         moore::DelayedContinuousAssignOp::create(builder, loc, lhs, rhs, delay);

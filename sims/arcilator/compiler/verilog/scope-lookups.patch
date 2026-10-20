@@ -1,0 +1,192 @@
+--- a/FormatStrings.cpp
++++ b/FormatStrings.cpp
+@@ -8,6 +8,7 @@
+ 
+ #include "ImportVerilogInternals.h"
+ #include "slang/ast/SFormat.h"
++#include "slang/ast/Scope.h"
+ #include "slang/ast/Symbol.h"
+ 
+ using namespace mlir;
+@@ -113,6 +114,18 @@
+       auto value = moore::FormatHierPathOp::create(builder, loc, useEscapes);
+       value->setAttr("chipyard.sv_format_scope", builder.getStringAttr(
+           context.currentFormatScope->getHierarchicalPath()));
++      for (auto *scope = context.currentFormatScope; scope;) {
++        if (scope->kind == slang::ast::SymbolKind::InstanceBody)
++          break;
++        if (scope->kind == slang::ast::SymbolKind::Package ||
++            scope->kind == slang::ast::SymbolKind::CompilationUnit) {
++          value->setAttr("chipyard.sv_format_static", builder.getStringAttr(
++              scope->kind == slang::ast::SymbolKind::Package ? "package" : "unit"));
++          break;
++        }
++        auto *parent = scope->getParentScope();
++        scope = parent ? &parent->asSymbol() : nullptr;
++      }
+       fragments.push_back(value);
+       return success();
+     }
+--- a/MooreToCore.cpp
++++ b/MooreToCore.cpp
+@@ -652,8 +652,17 @@
+     SmallVector<Type> convResTypes;
+     if (failed(typeConverter->convertTypes(op.getResultTypes(), convResTypes)))
+       return failure();
+-    rewriter.replaceOpWithNewOp<llhd::CallCoroutineOp>(
++    auto lookup = op->getAttr("chipyard.sv_call_lookup");
++    auto frame = op->getAttr("chipyard.sv_scope_call");
++    auto unresolved = op->getAttr("chipyard.sv_scope_unresolved");
++    auto replacement = rewriter.replaceOpWithNewOp<llhd::CallCoroutineOp>(
+         op, convResTypes, adaptor.getCallee(), adaptor.getOperands());
++    if (lookup)
++      replacement->setAttr("chipyard.sv_call_lookup", lookup);
++    if (frame)
++      replacement->setAttr("chipyard.sv_scope_call", frame);
++    if (unresolved)
++      replacement->setAttr("chipyard.sv_scope_unresolved", unresolved);
+     return success();
+   }
+ };
+@@ -2255,10 +2264,16 @@
+     if (typeConverter->convertTypes(op.getResultTypes(), convResTypes).failed())
+       return failure();
+     auto lookup = op->getAttr("chipyard.sv_call_lookup");
++    auto frame = op->getAttr("chipyard.sv_scope_call");
++    auto unresolved = op->getAttr("chipyard.sv_scope_unresolved");
+     auto replacement = rewriter.replaceOpWithNewOp<func::CallOp>(
+         op, adaptor.getCallee(), convResTypes, adaptor.getOperands());
+     if (lookup)
+       replacement->setAttr("chipyard.sv_call_lookup", lookup);
++    if (frame)
++      replacement->setAttr("chipyard.sv_scope_call", frame);
++    if (unresolved)
++      replacement->setAttr("chipyard.sv_scope_unresolved", unresolved);
+     return success();
+   }
+ };
+@@ -2274,11 +2289,17 @@
+     if (typeConverter->convertTypes(op.getResultTypes(), convResTypes).failed())
+       return failure();
+     auto lookup = op->getAttr("chipyard.dpi_context_lookup");
++    auto frame = op->getAttr("chipyard.sv_scope_call");
++    auto unresolved = op->getAttr("chipyard.sv_scope_unresolved");
+     auto replacement = rewriter.replaceOpWithNewOp<sim::DPICallOp>(
+         op, convResTypes, op.getCalleeAttr(), /*clock=*/Value(),
+         /*enable=*/Value(), adaptor.getInputs());
+     if (lookup)
+       replacement->setAttr("chipyard.dpi_context_lookup", lookup);
++    if (frame)
++      replacement->setAttr("chipyard.sv_scope_call", frame);
++    if (unresolved)
++      replacement->setAttr("chipyard.sv_scope_unresolved", unresolved);
+     return success();
+   }
+ };
+@@ -2711,10 +2732,13 @@
+   matchAndRewrite(FormatHierPathOp op, OpAdaptor adaptor,
+                   ConversionPatternRewriter &rewriter) const override {
+     auto scope = op->getAttr("chipyard.sv_format_scope");
++    auto staticScope = op->getAttr("chipyard.sv_format_static");
+     auto replacement = rewriter.replaceOpWithNewOp<sim::FormatHierPathOp>(
+         op, adaptor.getUseEscapes());
+     if (scope)
+       replacement->setAttr("chipyard.sv_format_scope", scope);
++    if (staticScope)
++      replacement->setAttr("chipyard.sv_format_static", staticScope);
+     return success();
+   }
+ };
+--- a/Expressions.cpp
++++ b/Expressions.cpp
+@@ -15,6 +15,9 @@
+ #include "mlir/IR/Value.h"
+ #include "slang/ast/ASTVisitor.h"
+ #include "slang/ast/EvalContext.h"
++#include "slang/ast/ASTContext.h"
++#include "slang/ast/Lookup.h"
++#include "slang/ast/Scope.h"
+ #include "slang/ast/SystemSubroutine.h"
+ #include "slang/ast/types/AllTypes.h"
+ #include "slang/syntax/AllSyntax.h"
+@@ -1998,6 +2001,44 @@
+ 
+     const bool isMethod = (subroutine->thisVar != nullptr);
+ 
++    // Re-resolve the original name in its lexical scope, and accept provenance
++    // only when it identifies the same elaborated subroutine as the bound AST.
++    // The first resolved path element distinguishes a child-relative lookup
++    // from a top-anchored lookup even when both refer to the same canonical IR.
++    auto *invocation = expr.syntax
++        ? expr.syntax->as_if<slang::syntax::InvocationExpressionSyntax>() : nullptr;
++    auto *callName = invocation
++        ? invocation->left->as_if<slang::syntax::NameSyntax>()
++        : expr.syntax ? expr.syntax->as_if<slang::syntax::NameSyntax>() : nullptr;
++    auto recordScopeCall = [&](Operation *op) {
++      op->setAttr("chipyard.sv_scope_unresolved", builder.getUnitAttr());
++      if (!callName || !context.currentFormatScope ||
++          !context.currentFormatScope->isScope())
++        return;
++      slang::ast::LookupResult lookup;
++      slang::ast::ASTContext lexicalContext(
++          context.currentFormatScope->as<slang::ast::Scope>(),
++          slang::ast::LookupLocation::max);
++      slang::ast::Lookup::name(*callName, lexicalContext,
++          slang::ast::LookupFlags::AllowRoot |
++          slang::ast::LookupFlags::AllowUnit, lookup);
++      if (lookup.hasError() || lookup.found != subroutine ||
++          lookup.flags.has(slang::ast::LookupResultFlags::IfacePort))
++        return;
++      auto *anchor = lookup.path.empty()
++          ? subroutine->getParentScope()
++          : lookup.path.front().symbol->getParentScope();
++      NamedAttrList frame;
++      frame.set("caller", builder.getStringAttr(
++          context.currentFormatScope->getHierarchicalPath()));
++      frame.set("anchor", builder.getStringAttr(
++          anchor && anchor->asSymbol().kind != slang::ast::SymbolKind::Root
++              ? anchor->asSymbol().getHierarchicalPath() : ""));
++      frame.set("callee", builder.getStringAttr(subroutine->getHierarchicalPath()));
++      op->setAttr("chipyard.sv_scope_call", frame.getDictionary(builder.getContext()));
++      op->removeAttr("chipyard.sv_scope_unresolved");
++    };
++
+     auto *lowering = context.declareFunction(*subroutine);
+     if (!lowering)
+       return {};
+@@ -2072,15 +2113,13 @@
+       auto callOp = moore::FuncDPICallOp::create(
+           builder, loc, resultTypes,
+           SymbolRefAttr::get(dpi.getSymNameAttr()), operands);
++      recordScopeCall(callOp);
+       if (subroutine->flags.has(slang::ast::MethodFlags::DPIContext)) {
+-        auto *invocation = expr.syntax
+-            ? expr.syntax->as_if<slang::syntax::InvocationExpressionSyntax>()
+-            : nullptr;
+-        if (!invocation) {
++        if (!callName) {
+           mlir::emitError(loc, "native context DPI requires call lookup provenance");
+           return {};
+         }
+-        bool lexical = invocation->left->kind == slang::syntax::SyntaxKind::IdentifierName;
++        bool lexical = callName->kind == slang::syntax::SyntaxKind::IdentifierName;
+         callOp->setAttr("chipyard.dpi_context_lookup",
+                         builder.getStringAttr(lexical ? "lexical" : "absolute"));
+       }
+@@ -2232,12 +2271,10 @@
+ 
+     // Keep hierarchical lookup through function inlining. A lexical DPI call
+     // inside a hierarchically selected function belongs to that instance.
+-    if (isa<mlir::func::CallOp>(callOp.getOperation())) {
+-      auto *invocation = expr.syntax
+-          ? expr.syntax->as_if<slang::syntax::InvocationExpressionSyntax>()
+-          : nullptr;
+-      if (invocation) {
+-        bool lexical = invocation->left->kind == slang::syntax::SyntaxKind::IdentifierName;
++    if (isa<mlir::func::CallOp, moore::CallCoroutineOp>(callOp.getOperation())) {
++      recordScopeCall(callOp.getOperation());
++      if (callName) {
++        bool lexical = callName->kind == slang::syntax::SyntaxKind::IdentifierName;
+         callOp->setAttr("chipyard.sv_call_lookup",
+                         builder.getStringAttr(lexical ? "lexical" : "absolute"));
+       }

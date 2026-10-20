@@ -1,0 +1,34 @@
+--- a/Structure.cpp
++++ b/Structure.cpp
+@@ -327,8 +327,29 @@
+   ModuleVisitor(Context &context, Location loc, StringRef blockNamePrefix = "")
+       : BaseVisitor(context, loc), blockNamePrefix(blockNamePrefix) {}
+ 
+-  // Skip ports which are already handled by the module itself.
+-  LogicalResult visit(const slang::ast::PortSymbol &) { return success(); }
++  // Output variable port initializers belong to the PortSymbol in Slang,
++  // rather than to its internal VariableSymbol. Preserve them just like
++  // ordinary module variable initializers. Input defaults are connections,
++  // not assignments to the module's internal storage.
++  LogicalResult visit(const slang::ast::PortSymbol &port) {
++    if (port.direction != slang::ast::ArgumentDirection::Out ||
++        !port.internalSymbol || !port.getInitializer())
++      return success();
++    auto *var = port.internalSymbol->as_if<slang::ast::VariableSymbol>();
++    if (!var || var->getInitializer())
++      return success();
++    auto ref = context.valueSymbols.lookup(var);
++    auto variable = ref ? ref.getDefiningOp<moore::VariableOp>()
++                        : moore::VariableOp{};
++    if (!variable)
++      return mlir::emitError(loc, "missing output variable port storage");
++    auto type = cast<moore::RefType>(ref.getType()).getNestedType();
++    auto initial = context.convertRvalueExpression(*port.getInitializer(), type);
++    if (!initial)
++      return failure();
++    variable.getInitialMutable().assign(initial);
++    return success();
++  }
+   LogicalResult visit(const slang::ast::MultiPortSymbol &) { return success(); }
+   LogicalResult visit(const slang::ast::InterfacePortSymbol &) {
+     return success();

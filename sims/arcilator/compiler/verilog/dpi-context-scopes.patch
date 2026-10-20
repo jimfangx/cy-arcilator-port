@@ -1,0 +1,105 @@
+--- a/Expressions.cpp
++++ b/Expressions.cpp
+@@ -2042,6 +2042,18 @@
+       auto callOp = moore::FuncDPICallOp::create(
+           builder, loc, resultTypes,
+           SymbolRefAttr::get(lowering->op.getNameAttr()), operands);
++      if (subroutine->flags.has(slang::ast::MethodFlags::DPIContext)) {
++        auto *invocation = expr.syntax
++            ? expr.syntax->as_if<slang::syntax::InvocationExpressionSyntax>()
++            : nullptr;
++        if (!invocation) {
++          mlir::emitError(loc, "native context DPI requires call lookup provenance");
++          return {};
++        }
++        bool lexical = invocation->left->kind == slang::syntax::SyntaxKind::IdentifierName;
++        callOp->setAttr("chipyard.dpi_context_lookup",
++                        builder.getStringAttr(lexical ? "lexical" : "absolute"));
++      }
+ 
+       unsigned resultIndex = 0;
+       unsigned targetIndex = 0;
+@@ -2193,6 +2205,19 @@
+       callOp = mlir::func::CallOp::create(builder, loc, funcOp, arguments);
+     }
+ 
++    // Keep hierarchical lookup through function inlining. A lexical DPI call
++    // inside a hierarchically selected function belongs to that instance.
++    if (isa<mlir::func::CallOp>(callOp.getOperation())) {
++      auto *invocation = expr.syntax
++          ? expr.syntax->as_if<slang::syntax::InvocationExpressionSyntax>()
++          : nullptr;
++      if (invocation) {
++        bool lexical = invocation->left->kind == slang::syntax::SyntaxKind::IdentifierName;
++        callOp->setAttr("chipyard.sv_call_lookup",
++                        builder.getStringAttr(lexical ? "lexical" : "absolute"));
++      }
++    }
++
+     // Copy output/inout arguments that were routed through a temporary back
+     // to their call argument now that the call has returned.
+     for (auto &writeback : writebacks) {
+--- a/MooreToCore.cpp
++++ b/MooreToCore.cpp
+@@ -2248,8 +2248,11 @@
+     SmallVector<Type> convResTypes;
+     if (typeConverter->convertTypes(op.getResultTypes(), convResTypes).failed())
+       return failure();
+-    rewriter.replaceOpWithNewOp<func::CallOp>(
++    auto lookup = op->getAttr("chipyard.sv_call_lookup");
++    auto replacement = rewriter.replaceOpWithNewOp<func::CallOp>(
+         op, adaptor.getCallee(), convResTypes, adaptor.getOperands());
++    if (lookup)
++      replacement->setAttr("chipyard.sv_call_lookup", lookup);
+     return success();
+   }
+ };
+@@ -2264,9 +2264,12 @@
+     SmallVector<Type> convResTypes;
+     if (typeConverter->convertTypes(op.getResultTypes(), convResTypes).failed())
+       return failure();
+-    rewriter.replaceOpWithNewOp<sim::DPICallOp>(
++    auto lookup = op->getAttr("chipyard.dpi_context_lookup");
++    auto replacement = rewriter.replaceOpWithNewOp<sim::DPICallOp>(
+         op, convResTypes, op.getCalleeAttr(), /*clock=*/Value(),
+         /*enable=*/Value(), adaptor.getInputs());
++    if (lookup)
++      replacement->setAttr("chipyard.dpi_context_lookup", lookup);
+     return success();
+   }
+ };
+--- a/Structure.cpp
++++ b/Structure.cpp
+@@ -2473,15 +2473,6 @@
+     auto dpiOp = moore::DPIFuncOp::create(
+         builder, loc, StringAttr::get(getContext(), qualifiedName), *dpiSig,
+         /*argumentLocs=*/ArrayAttr(), cNameAttr);
+-    // Moore-to-Core rebuilds DPI declarations and drops their custom attrs.
+-    // Keep original SV ABI information on the enclosing module until the
+-    // native RTL pass restores it onto each declaration and call site.
+-    NamedAttrList imports(
+-        intoModuleOp->getAttrOfType<DictionaryAttr>("chipyard.dpi_imports"));
+-    imports.set(dpiOp.getSymName(),
+-                describeDPIImport(*this, subroutine, cNameAttr));
+-    intoModuleOp->setAttr("chipyard.dpi_imports",
+-                          imports.getDictionary(getContext()));
+     setVisibilityAndExportAttr(dpiOp);
+     lowering = std::make_unique<FunctionLowering>(dpiOp);
+     insertedOp = dpiOp;
+@@ -2509,6 +2500,16 @@
+   // Add the op to the symbol table of the MLIR module, which uniquifies
+   // its name.
+   symbolTable.insert(insertedOp);
++  // Moore-to-Core rebuilds declarations. Preserve original ABI provenance
++  // under the final uniqued symbol, including late hierarchical declarations.
++  if (auto dpi = dyn_cast<moore::DPIFuncOp>(insertedOp)) {
++    NamedAttrList imports(intoModuleOp->getAttrOfType<DictionaryAttr>(
++        "chipyard.dpi_imports"));
++    imports.set(dpi.getSymName(), describeDPIImport(
++        *this, subroutine, dpi->getAttrOfType<StringAttr>("verilogName")));
++    intoModuleOp->setAttr("chipyard.dpi_imports",
++                         imports.getDictionary(getContext()));
++  }
+   functions[&subroutine] = std::move(lowering);
+ 
+   // Schedule the body to be defined later.

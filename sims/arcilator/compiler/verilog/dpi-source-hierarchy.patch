@@ -1,0 +1,55 @@
+--- a/Structure.cpp
++++ b/Structure.cpp
+@@ -890,6 +890,8 @@
+         builder.getStringAttr(instName),
+         FlatSymbolRefAttr::get(module.getSymNameAttr()), inputValues,
+         inputNames, outputNames);
++    inst->setAttr("chipyard.sv_source_scope",
++                  builder.getStringAttr(instNode.getHierarchicalPath()));
+ 
+     // An alias belongs to this instance if the body containing its symbol is
+     // nested anywhere under the instance in the elaborated tree.
+@@ -1756,6 +1758,8 @@
+   // Create an empty module that corresponds to this module.
+   auto moduleOp =
+       moore::SVModuleOp::create(builder, loc, module->name, moduleType);
++  moduleOp->setAttr("chipyard.sv_source_scope",
++                    builder.getStringAttr(module->getHierarchicalPath()));
+   SmallVector<sv::SVAttributeAttr> svAttrs;
+   for (const auto *attr : compilation.getAttributes(module->getDefinition())) {
+     StringAttr exprAttr;
+--- a/MooreToCore.cpp
++++ b/MooreToCore.cpp
+@@ -404,6 +404,8 @@
+ 
+     auto hwModuleOp = hw::HWModuleOp::create(rewriter, op.getLoc(),
+                                              op.getSymNameAttr(), *portInfo);
++    if (auto scope = op->getAttr("chipyard.sv_source_scope"))
++      hwModuleOp->setAttr("chipyard.sv_source_scope", scope);
+     if (auto svAttrs = sv::getSVAttributes(op))
+       sv::setSVAttributes(hwModuleOp, svAttrs);
+     // Make hw.module have the same visibility as the moore.module.
+@@ -450,6 +452,8 @@
+         op.getInputs(), op.getInputNamesAttr(), op.getOutputNamesAttr(),
+         /*Parameter*/ rewriter.getArrayAttr({}), /*InnerSymbol*/ nullptr,
+         /*doNotPrint*/ nullptr);
++    if (auto scope = op->getAttr("chipyard.sv_source_scope"))
++      instOp->setAttr("chipyard.sv_source_scope", scope);
+ 
+     // Replace uses chain and erase the original op.
+     op.replaceAllUsesWith(instOp.getResults());
+@@ -2218,11 +2222,13 @@
+     if (typeConverter->convertTypes(op.getResultTypes(), convResTypes).failed())
+       return failure();
+ 
+-    rewriter.replaceOpWithNewOp<hw::InstanceOp>(
++    auto replacement = rewriter.replaceOpWithNewOp<hw::InstanceOp>(
+         op, convResTypes, op.getInstanceName(), op.getModuleName(),
+         adaptor.getOperands(), op.getArgNames(),
+         op.getResultNames(), /*Parameter*/
+         rewriter.getArrayAttr({}), /*InnerSymbol*/ nullptr);
++    if (auto scope = op->getAttr("chipyard.sv_source_scope"))
++      replacement->setAttr("chipyard.sv_source_scope", scope);
+ 
+     return success();
+   }

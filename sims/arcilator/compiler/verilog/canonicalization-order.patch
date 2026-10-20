@@ -1,0 +1,25 @@
+--- a/ImportVerilog.cpp
++++ b/ImportVerilog.cpp
+@@ -22,6 +22,7 @@
+ #include "mlir/Pass/PassManager.h"
+ #include "mlir/Support/Timing.h"
+ #include "mlir/Tools/mlir-translate/Translation.h"
++#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+ #include "mlir/Transforms/Passes.h"
+ #include "llvm/ADT/Hashing.h"
+ #include "llvm/Support/SourceMgr.h"
+@@ -521,7 +522,13 @@
+     // opportunities.
+     auto &anyPM = pm.nestAny();
+     anyPM.addPass(mlir::createCSEPass());
+-    anyPM.addPass(mlir::createCanonicalizerPass());
++    // Simplify uses before definitions. A top-down walk can prune a constant
++    // branch before visiting its now-unreachable induction loop, exposing
++    // recursive comb.add operands to repeated constant reassociation.
++    mlir::GreedyRewriteConfig config;
++    config.setUseTopDownTraversal(false);
++    config.setRegionSimplificationLevel(mlir::GreedySimplifyRegionLevel::Normal);
++    anyPM.addPass(mlir::createCanonicalizerPass(config));
+   }
+ }
+ 

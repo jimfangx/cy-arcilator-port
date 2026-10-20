@@ -1,0 +1,83 @@
+--- a/MooreToCore.cpp
++++ b/MooreToCore.cpp
+@@ -2559,6 +2559,80 @@
+       delay = adaptor.getDelay();
+     }
+ 
++    if constexpr (std::is_same_v<OpTy, DelayedContinuousAssignOp>) {
++      // A continuous assignment is inertial. Keep that source distinction
++      // before generic LLHD signal canonicalization can erase it.
++      llhd::TimeAttr timing;
++      bool knownZero = false;
++      if (matchPattern(delay, m_Constant(&timing))) {
++        if (!timing.getDelta() && !timing.getEpsilon())
++          knownZero = timing.getTime() == 0;
++      } else if (auto cast = delay.template getDefiningOp<llhd::IntToTimeOp>()) {
++        APInt value;
++        if (matchPattern(cast.getInput(), m_ConstantInt(&value)))
++          knownZero = value.isZero();
++      }
++      if (!knownZero) {
++        auto data = adaptor.getSrc();
++        auto type = data.getType();
++        auto width = hw::getBitWidth(type);
++        if (width <= 0)
++          return op.emitError("native inertial assignment needs packed data");
++        auto signal = adaptor.getDst().template getDefiningOp<llhd::SignalOp>();
++        if (!signal)
++          return op.emitError("native inertial assignment needs its original signal initializer");
++        APInt initial(width, 0);
++        if (auto init = signal.getInit()) {
++          Attribute value;
++          if (!matchPattern(init, m_Constant(&value)))
++            return op.emitError("native inertial assignment needs a constant initializer");
++          if (auto integer = dyn_cast<IntegerAttr>(value))
++            initial = integer.getValue();
++          else if (auto array = dyn_cast<ArrayAttr>(value)) {
++            if (failed(hw::aggregateAttrToAPInt(init.getType(), array, initial)))
++              return op.emitError("invalid native inertial aggregate initializer");
++          } else
++            return op.emitError("unsupported native inertial initializer");
++        }
++        // Keep the time expression until canonicalization folds real literals
++        // and timeunit scaling. LLHD TimeToInt reports physical femtoseconds.
++        auto delayFs = llhd::TimeToIntOp::create(rewriter, op.getLoc(), delay);
++        auto integer = rewriter.getIntegerType(width);
++        hw::HWModuleExternOp declaration;
++        auto top = op->template getParentOfType<ModuleOp>();
++        {
++          OpBuilder::InsertionGuard guard(rewriter);
++          rewriter.setInsertionPointToStart(top.getBody());
++          std::string name = "__ArcInertialDelay_i" + std::to_string(width);
++          while (top.lookupSymbol(name)) name += "_";
++          SmallVector<hw::PortInfo> ports{
++              {{rewriter.getStringAttr("value"), integer, hw::ModulePort::Input}, 0},
++              {{rewriter.getStringAttr("delay_fs"), rewriter.getI64Type(), hw::ModulePort::Input}, 1},
++              {{rewriter.getStringAttr("q"), integer, hw::ModulePort::Output}, 0}};
++          declaration = hw::HWModuleExternOp::create(
++              rewriter, op.getLoc(), rewriter.getStringAttr(name), ports,
++              "ArcDelay", rewriter.getArrayAttr({
++                  hw::ParamDeclAttr::get("INIT", integer),
++                  hw::ParamDeclAttr::get("INERTIAL", rewriter.getI1Type())}));
++          declaration.setPrivate();
++        }
++        if (type != integer)
++          data = hw::BitcastOp::create(rewriter, op.getLoc(), integer, data);
++        auto instance = hw::InstanceOp::create(
++            rewriter, op.getLoc(), declaration, declaration.getSymName(),
++            SmallVector<Value>{data, delayFs}, rewriter.getArrayAttr({
++                hw::ParamDeclAttr::get("INIT", rewriter.getIntegerAttr(integer, initial)),
++                hw::ParamDeclAttr::get("INERTIAL", rewriter.getBoolAttr(true))}));
++        Value result = instance.getResult(0);
++        if (type != integer)
++          result = hw::BitcastOp::create(rewriter, op.getLoc(), type, result);
++        delay = llhd::ConstantTimeOp::create(
++            rewriter, op.getLoc(), getBlockingOrContinuousAssignDelay(op->getContext()));
++        rewriter.replaceOpWithNewOp<llhd::DriveOp>(
++            op, adaptor.getDst(), result, delay, Value{});
++        return success();
++      }
++    }
+     rewriter.replaceOpWithNewOp<llhd::DriveOp>(
+         op, adaptor.getDst(), adaptor.getSrc(), delay, Value{});
+     return success();
