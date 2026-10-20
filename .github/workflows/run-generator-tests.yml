@@ -23,7 +23,7 @@ jobs:
       test_names: ${{ steps.tests.outputs.test_names }}
     steps:
       - name: Check out pull request merge ref
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: refs/pull/${{ inputs.pr_number }}/merge
 
