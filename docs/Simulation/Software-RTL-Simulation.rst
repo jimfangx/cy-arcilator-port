@@ -20,15 +20,18 @@ DRAMSim2, SimUART, SimTSI, SimJTAG, and SimDTM. It does not require Verilator to
 build or run. Ordinary RTL blackboxes can be imported through CIRCT's Verilog
 frontend. An optional ``ARC_RUNTIME=hybrid`` reference still uses Verilator.
 
-Activate the usual Chipyard environment and install a matching full CIRCT tool
-suite with its headers and libraries. The current integration is tested with
-CIRCT firtool-1.162.0. For example:
+The standard Chipyard setup installs the matching full CIRCT
+firtool-1.162.0 suite with its headers and libraries. Source ``env.sh`` to
+activate the environment; the backend discovers the suite on ``PATH``.
+Existing environments with older CIRCT tools must rerun setup step 10.
+For example, from the Chipyard root:
 
 .. code-block:: shell
 
+    source env.sh
     cd sims/arcilator
-    make CIRCT_BIN=/path/to/circt/bin CONFIG=RocketConfig
-    make CIRCT_BIN=/path/to/circt/bin CONFIG=RocketConfig run-binary-fast \
+    make CONFIG=RocketConfig
+    make CONFIG=RocketConfig run-binary-fast \
         BINARY=/absolute/path/to/program.riscv
 
 The backend uses the shared configuration and simulation targets. Its

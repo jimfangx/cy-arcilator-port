@@ -66,7 +66,15 @@ if [ -z "$PREFIX" ] ; then
     exit 1
 fi
 
-
+CIRCT_CONDA_ARGS=()
+if [ -n "${CONDA:-}" ]; then
+    CIRCT_CONDA_PREFIX=${CONDA_PREFIX:-$RDIR/.conda-env}
+    CIRCT_CONDA_ARGS+=(
+        "-DCMAKE_PREFIX_PATH=$CIRCT_CONDA_PREFIX"
+        "-DCMAKE_EXE_LINKER_FLAGS=-L$CIRCT_CONDA_PREFIX/lib"
+        "-DCMAKE_INSTALL_RPATH=$PREFIX/lib;$CIRCT_CONDA_PREFIX/lib"
+    )
+fi
 
 echo "Cloning CIRCT"
 (
@@ -76,11 +84,8 @@ echo "Cloning CIRCT"
 echo "Cloning CIRCT/LLVM"
 (
     cd $RDIR/tools/circt
-    git submodule init
-    # The settings in circt/.gitmodules don't "stick", so force-set them here
-    git config submodule.llvm.shallow true
-    git config submodule.llvm.branch main
-    git submodule update --recommend-shallow --progress llvm
+    # Use the LLVM revision pinned by the selected CIRCT release.
+    git submodule update --init --depth 1 --progress llvm
 )
 
 echo "Building CIRCT's LLVM/MLIR"
@@ -91,15 +96,22 @@ echo "Building CIRCT's LLVM/MLIR"
     cd llvm/build
     cmake -G Ninja ../llvm \
           -DLLVM_ENABLE_PROJECTS="mlir" \
+          -DLLVM_BUILD_TOOLS=ON \
+          -DLLVM_INSTALL_UTILS=ON \
+          -DLLVM_ENABLE_Z3_SOLVER=ON \
           -DLLVM_TARGETS_TO_BUILD="host" \
           -DLLVM_ENABLE_ASSERTIONS=ON \
           -DCMAKE_BUILD_TYPE=RELEASE \
+          -DCMAKE_INSTALL_PREFIX="$PREFIX" \
           -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
           -DCMAKE_C_COMPILER="$CC" \
           -DCMAKE_CXX_COMPILER="$CXX" \
           -DCMAKE_CXX_FLAGS="$CIRCT_CXX_FLAGS" \
-          ${CONDA:+-DCMAKE_EXE_LINKER_FLAGS="-L$RDIR/.conda-env/lib"}
+          "${CIRCT_CONDA_ARGS[@]}"
     ninja
+    # Native compiler plugins need the matching LLVM/MLIR headers, libraries
+    # and tools in the installation, not just the CIRCT executables.
+    ninja install
 )
 
 echo "Building CIRCT"
@@ -109,15 +121,18 @@ echo "Building CIRCT"
     mkdir build
     cd build
     cmake -G Ninja .. \
-          -DMLIR_DIR=$RDIR/tools/circt/llvm/build/lib/cmake/mlir \
-          -DLLVM_DIR=$RDIR/tools/circt/llvm/build/lib/cmake/llvm \
+          -DMLIR_DIR="$PREFIX/lib/cmake/mlir" \
+          -DLLVM_DIR="$PREFIX/lib/cmake/llvm" \
           -DLLVM_ENABLE_ASSERTIONS=ON \
+          -DCIRCT_SLANG_FRONTEND_ENABLED=ON \
+          -DCIRCT_RELEASE_TAG_ENABLED=ON \
+          -DCIRCT_RELEASE_TAG=firtool \
           -DCMAKE_BUILD_TYPE=RELEASE \
           -DCMAKE_INSTALL_PREFIX=$PREFIX \
           -DCMAKE_C_COMPILER="$CC" \
           -DCMAKE_CXX_COMPILER="$CXX" \
           -DCMAKE_CXX_FLAGS="$CIRCT_CXX_FLAGS" \
-          ${CONDA:+-DCMAKE_EXE_LINKER_FLAGS="-L$RDIR/.conda-env/lib"}
+          "${CIRCT_CONDA_ARGS[@]}"
     ninja
 )
 

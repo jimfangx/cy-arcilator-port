@@ -9,15 +9,16 @@ model bindings call the original selected C/C++ device
 drivers through the DPI interfaces those drivers already expose.
 
 ```sh
+source env.sh
 cd sims/arcilator
-make CIRCT_BIN=/path/to/circt/bin CONFIG=RocketConfig
-make CIRCT_BIN=/path/to/circt/bin CONFIG=RocketConfig run-binary-fast \
+make CONFIG=RocketConfig
+make CONFIG=RocketConfig run-binary-fast \
   BINARY=/absolute/path/to/program.riscv
-make CIRCT_BIN=/path/to/circt/bin CONFIG=RocketConfig debug
-make CIRCT_BIN=/path/to/circt/bin CONFIG=RocketConfig run-binary-debug \
+make CONFIG=RocketConfig debug
+make CONFIG=RocketConfig run-binary-debug \
   BINARY=/absolute/path/to/program.riscv
-make CIRCT_BIN=/path/to/circt/bin native-test
-make CIRCT_BIN=/path/to/circt/bin integration-test ARC_TEST_CASES="dmi uart network"
+make native-test
+make integration-test ARC_TEST_CASES="dmi uart network"
 python3 tests/coverage.py --runtime native
 ```
 
@@ -38,16 +39,20 @@ the modules and macros in the selected preprocessed design. The
 editing, adding, or removing a library file refreshes RTL import. This also
 tracks headers when a checkout preserves their size and timestamp.
 
-Activate the normal Chipyard environment and set `RISCV`. Install a **full,
-matching CIRCT tool suite** with headers and runtime libraries, `firtool`,
-`circt-verilog`, `circt-opt`, `arcilator`, `opt`, `llc`, and `llvm-config`.
-This integration has been tested with **firtool-1.162.0**. Chipyard's older
-bundled firtool alone does not supply the required native frontend. The shared
-Verilog collateral generation can continue using the bundled `FIRTOOL_BIN`.
-The [CIRCT release](https://github.com/llvm/circt/releases/tag/firtool-1.162.0)
-provides `circt-full-static-linux-x64.tar.gz`; verify its published checksum.
-That installation also requires the system Z3 library. Native host compilation
-uses C++17, GNU C11 for `.c` drivers, and zlib.
+Run `source env.sh` from the Chipyard root to activate the normal environment
+and set `RISCV`. The standard setup (step 10 of `build-setup.sh`)
+installs the full **firtool-1.162.0** suite pinned in `conda-reqs/circt.json`,
+including the matching headers and runtime libraries. Source builds use the
+same release's CIRCT and LLVM revisions and enable the Slang Verilog frontend
+and Z3 support. The Makefile discovers
+`arcilator` on `PATH` and uses `firtool`, `circt-verilog`, `circt-opt`, `opt`,
+`llc`, `llvm-config`, and `mlir-translate` from the same installation.
+No `CIRCT_BIN` argument is needed; it remains an optional override for an
+alternate full SDK. Existing environments with the older CIRCT 1.75.0 must
+rerun the CIRCT installation step; sourcing `env.sh` alone does not upgrade
+installed tools. The base environment supplies `libz3` (Z3 4.x); setup connects
+it to the SDK's runtime library search path. Native host
+compilation uses C++17, GNU C11 for `.c` drivers, and zlib.
 
 `ARCILATOR_FLAGS`, `ARC_FIRTOOL_FLAGS`, `ARC_RTL_FLAGS`, `ARC_OPT_LEVEL`,
 `ARC_LLC_OPT_LEVEL`,

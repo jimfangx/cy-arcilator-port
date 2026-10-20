@@ -16,7 +16,7 @@ dependencies:
     #   documentation on package_spec syntax for constraining versions
     - gcc>=15,<16
     - gxx>=15,<16
-    - sysroot_linux-64=2.34
+    - sysroot_linux-64=2.39
     - conda-gcc-specs
     - binutils
 
@@ -28,6 +28,7 @@ dependencies:
     - make
     - git
     - ninja # needed in case we need to built circt from scratch
+    - libz3>=4,<5 # native solver library required by the CIRCT SDK
     - libnuma # added to prevent libnuma.so.1 not found err on systems without it
     - numactl # same as above
 

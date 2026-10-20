@@ -31,8 +31,9 @@ $(sim_files): $(SIM_FILE_REQS) $(ALL_MODS_FILELIST) | $(GEN_COLLATERAL_DIR)
 	printf '%s\n' $(addprefix $(GEN_COLLATERAL_DIR)/,$(notdir $(SIM_FILE_REQS))) > $@
 include $(base_dir)/common.mk
 
-# Use one CIRCT installation for the HW frontend, optimizer, simulator, and LLVM
-# code generator: their IR and runtime ABIs must agree.
+# Discover the CIRCT suite on PATH after sourcing env.sh. Keep the frontend,
+# optimizer, simulator and LLVM tools in that installation so their ABIs agree.
+# CIRCT_BIN remains an optional override for an alternate SDK.
 ifdef ARCILATOR
 CIRCT_BIN ?= $(patsubst %/,%,$(dir $(shell command -v $(ARCILATOR))))
 else
@@ -71,7 +72,7 @@ ifneq ($(RANDOM_SEED),)
 SEED_FLAG := $(if $(filter native,$(ARC_RUNTIME)),+seed=$(RANDOM_SEED),+verilator+seed+$(RANDOM_SEED))
 endif
 HELP_COMPILATION_VARIABLES += \
-"   CIRCT_BIN              = directory containing a matching CIRCT tool suite (tested with firtool 1.162.0)" \
+"   CIRCT_BIN              = optional CIRCT tool directory override; defaults to arcilator on PATH from env.sh" \
 "   ARCILATOR_FLAGS        = extra Arcilator compiler options" \
 "   ARC_FIRTOOL_FLAGS      = extra native HW frontend options" \
 "   ARC_RUNTIME            = native (default) or hybrid reference runtime" \
@@ -254,7 +255,7 @@ integration-test: check-arcilator-tools
 .PHONY: check-arcilator-tools
 check-arcilator-tools:
 	@for tool in $(ARC_FIRTOOL) $(CIRCT_VERILOG) $(CIRCT_OPT) $(ARCILATOR) $(LLVM_OPT) $(LLC) $(LLVM_CONFIG) $(MLIR_TRANSLATE); do \
-	  command -v "$$tool" >/dev/null 2>&1 || { echo "Missing $$tool. Set CIRCT_BIN to a full CIRCT installation and activate the Chipyard environment." >&2; exit 1; }; \
+	  command -v "$$tool" >/dev/null 2>&1 || { echo "Missing $$tool. Source env.sh and install the full CIRCT suite pinned in conda-reqs/circt.json using build-setup.sh step 10." >&2; exit 1; }; \
 	done
 	@test -r $(CIRCT_ROOT)/include/circt/Dialect/Arc/Runtime/ArcRuntime.h -a -r $(CIRCT_ROOT)/lib/libCIRCTArcRuntime.a || \
 	  { echo "CIRCT_ROOT=$(CIRCT_ROOT) must contain the matching CIRCT headers and runtime libraries." >&2; exit 1; }

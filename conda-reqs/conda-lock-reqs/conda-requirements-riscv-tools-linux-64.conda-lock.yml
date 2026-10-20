@@ -5,15 +5,15 @@
 # available, unless you explicitly update the lock file.
 #
 # Install this environment as "YOURENV" with:
-#     conda-lock install -n YOURENV conda-requirements-riscv-tools-linux-64.conda-lock.yml.lcQm0S.conda-lock.yml
+#     conda-lock install -n YOURENV conda-requirements-riscv-tools-linux-64.conda-lock.yml
 # To update a single package to the latest version compatible with the version constraints in the source:
-#     conda-lock lock  --lockfile conda-requirements-riscv-tools-linux-64.conda-lock.yml.lcQm0S.conda-lock.yml --update PACKAGE
+#     conda-lock lock  --lockfile conda-requirements-riscv-tools-linux-64.conda-lock.yml --update PACKAGE
 # To re-solve the entire environment, e.g. after changing a version constraint in the source file:
-#     conda-lock -f ../chipyard-base.yaml -f ../chipyard-extended.yaml -f ../docs.yaml -f ../riscv-tools.yaml --lockfile conda-requirements-riscv-tools-linux-64.conda-lock.yml.lcQm0S.conda-lock.yml
+#     conda-lock -f ../chipyard-base.yaml -f ../chipyard-extended.yaml -f ../docs.yaml -f ../riscv-tools.yaml --lockfile conda-requirements-riscv-tools-linux-64.conda-lock.yml
 version: 1
 metadata:
   content_hash:
-    linux-64: 3698008a2945a151072b9511fc0d8576bc92621fc993318057af6904463f4ad4
+    linux-64: 98e5e45abceb12de858327c1b6e45a671c0ef3ec47b9faf6f466c58e31d16f6a
   channels:
   - url: ucb-bar
     used_env_vars: []
@@ -713,7 +713,7 @@ package:
   category: main
   optional: false
 - name: botocore
-  version: 1.43.111
+  version: 1.43.114
   manager: conda
   platform: linux-64
   dependencies:
@@ -721,10 +721,10 @@ package:
     python: '>=3.10'
     python-dateutil: '>=2.1,<3.0.0'
     urllib3: '>=1.25.4,!=2.2.0,<3'
-  url: https://conda.anaconda.org/conda-forge/noarch/botocore-1.43.111-pyhd8ed1ab_0.conda
+  url: https://conda.anaconda.org/conda-forge/noarch/botocore-1.43.114-pyhd8ed1ab_0.conda
   hash:
-    md5: 9b0b65fb806d05f36f00c02d947a89ea
-    sha256: 21a49ed7b1a8678783d1c8cbca5edadd6ed6420f76a4dc2ae1be06bc8e8ab5e9
+    md5: cbb3cee2ace14b97c621e0447abe18a3
+    sha256: c6f097b612a3e9fcce74cd105225a42ae6c047cd2a90804422e9d55286e30253
   category: main
   optional: false
 - name: botocore-stubs
@@ -802,28 +802,28 @@ package:
   category: main
   optional: false
 - name: c-ares
-  version: 1.34.8
+  version: 1.34.9
   manager: conda
   platform: linux-64
   dependencies:
     __glibc: '>=2.17,<3.0.a0'
     libgcc: '>=15'
-  url: https://conda.anaconda.org/conda-forge/linux-64/c-ares-1.34.8-hebe6cf0_2.conda
+  url: https://conda.anaconda.org/conda-forge/linux-64/c-ares-1.34.9-hebe6cf0_0.conda
   hash:
-    md5: 3ad2b403be8fc5612b9159e2ce621f69
-    sha256: 9c37cc233238adf366ea75b0e845662a5be07ceadf62e458183516369340274b
+    md5: 78b505af04bf7a87ca957ef0cb5946f5
+    sha256: bd95dd25b80b5c4faf5349542377bf89b2794e23d0f7aa7f1c431e4f3b633f3c
   category: main
   optional: false
 - name: ca-certificates
-  version: 2026.7.22
+  version: 2026.10.19
   manager: conda
   platform: linux-64
   dependencies:
     __unix: ''
-  url: https://conda.anaconda.org/conda-forge/noarch/ca-certificates-2026.7.22-hbd8a1cb_0.conda
+  url: https://conda.anaconda.org/conda-forge/noarch/ca-certificates-2026.10.19-hbd8a1cb_0.conda
   hash:
-    md5: 0f51e2391ade309db462a55611263e9c
-    sha256: 0a0544cf95f64394fe4959286f5c71f5444ad58feb0602e53becb27448d24da6
+    md5: a1d1bf676059d2863f000d5e2777743f
+    sha256: 9404ee878c6bd5b260655ab651366db43fac6be8d465fcc0acd0f7a50be91acb
   category: main
   optional: false
 - name: cairo
@@ -2342,14 +2342,14 @@ package:
   category: main
   optional: false
 - name: kernel-headers_linux-64
-  version: 5.14.0
+  version: 6.12.0
   manager: conda
   platform: linux-64
   dependencies: {}
-  url: https://conda.anaconda.org/conda-forge/noarch/kernel-headers_linux-64-5.14.0-he073ed8_3.conda
+  url: https://conda.anaconda.org/conda-forge/noarch/kernel-headers_linux-64-6.12.0-he073ed8_6.conda
   hash:
-    md5: 1e453742ed8f6b4250c66be1dd6ba4fe
-    sha256: c4d973dd80ab10028b3e4c58c1c6d8f437bfeaf6069dafb1130dabc550e9caf4
+    md5: ad5a27ffc9350af2624927dd79edf2be
+    sha256: 73b11f31db6c9ebe63d900334fa4f46859aa1ddd8f37cfa5f25a043e0a59253c
   category: main
   optional: false
 - name: keyutils
@@ -3534,7 +3534,7 @@ package:
   category: main
   optional: false
 - name: libsqlite
-  version: 3.54.0
+  version: 3.54.1
   manager: conda
   platform: linux-64
   dependencies:
@@ -3542,10 +3542,10 @@ package:
     icu: '>=78.3,<79.0a0'
     libgcc: '>=15'
     libzlib: '>=1.3.2,<2.0a0'
-  url: https://conda.anaconda.org/conda-forge/linux-64/libsqlite-3.54.0-h13e7031_1.conda
+  url: https://conda.anaconda.org/conda-forge/linux-64/libsqlite-3.54.1-h13e7031_0.conda
   hash:
-    md5: bb145547395d3329f3a1d930de9848b2
-    sha256: 4823e42fe95fc318d7af6125dc6ef33bd60c1152054d41661413250dc0e84e6c
+    md5: 8f15f0ec9b69344df5c3bb5cce1751a1
+    sha256: 07b3c98282022f05781122d073f84e944bfb4299946e8457ece3ce6c384ff78e
   category: main
   optional: false
 - name: libssh2
@@ -3767,6 +3767,21 @@ package:
     sha256: d1906463070c21f3215cd5de93164f31c44d5bac6ae9b5d8f5adf42b1e304039
   category: main
   optional: false
+- name: libz3
+  version: 4.16.0
+  manager: conda
+  platform: linux-64
+  dependencies:
+    __glibc: '>=2.17,<3.0.a0'
+    _openmp_mutex: '>=4.5'
+    libgcc: '>=15'
+    libstdcxx: '>=15'
+  url: https://conda.anaconda.org/conda-forge/linux-64/libz3-4.16.0-h504d5d6_1.conda
+  hash:
+    md5: 26920aa137892401fcaa2e03b74c55ff
+    sha256: e9e6a2bf6f2efc618c074192bbb2f61d567cc61fd8a70fad37424695d24d9663
+  category: main
+  optional: false
 - name: libzlib
   version: 1.3.2
   manager: conda
@@ -3839,11 +3854,11 @@ package:
   platform: linux-64
   dependencies:
     __glibc: '>=2.17,<3.0.a0'
-    libgcc: '>=14'
-  url: https://conda.anaconda.org/conda-forge/linux-64/make-4.4.1-hb03c661_3.conda
+    libgcc: '>=15'
+  url: https://conda.anaconda.org/conda-forge/linux-64/make-4.4.1-h1114479_4.conda
   hash:
-    md5: b4a198dc40024de2a59c1343e4ae4144
-    sha256: 4c65d2769847778a6d84db6984ac81bcec6f8958d349f1fe57ae040ccc56a801
+    md5: 538c2493de55d1fe2d90e0adc23d4948
+    sha256: d6a81e5c142d7be6a992f618097351e7996f81a6295045df3f9b4f498e1066a8
   category: main
   optional: false
 - name: markupsafe
@@ -5504,16 +5519,16 @@ package:
   category: main
   optional: false
 - name: sysroot_linux-64
-  version: '2.34'
+  version: '2.39'
   manager: conda
   platform: linux-64
   dependencies:
-    kernel-headers_linux-64: 5.14.0
+    kernel-headers_linux-64: 6.12.0
     tzdata: ''
-  url: https://conda.anaconda.org/conda-forge/noarch/sysroot_linux-64-2.34-he3f20f0_3.conda
+  url: https://conda.anaconda.org/conda-forge/noarch/sysroot_linux-64-2.39-he3f20f0_6.conda
   hash:
-    md5: 0e967042d560f3f1af601f08f5f0e31c
-    sha256: d8793b0fab035d128c29a990db0d0e6a96bf6baf4ded4d55a201f614f3d9cd6a
+    md5: f466e0c4e02d2faf778aaa2f24085934
+    sha256: bcbe694a9660abbe76ba25fa1fca3127b8752fc29b733de72a904c21d144ace1
   category: main
   optional: false
 - name: tar
@@ -6178,17 +6193,17 @@ package:
   category: main
   optional: false
 - name: xorg-libxrender
-  version: 0.9.12
+  version: 0.9.13
   manager: conda
   platform: linux-64
   dependencies:
     __glibc: '>=2.17,<3.0.a0'
-    libgcc: '>=14'
+    libgcc: '>=15'
     xorg-libx11: '>=1.8.13,<2.0a0'
-  url: https://conda.anaconda.org/conda-forge/linux-64/xorg-libxrender-0.9.12-hb03c661_1.conda
+  url: https://conda.anaconda.org/conda-forge/linux-64/xorg-libxrender-0.9.13-h7cc23a3_0.conda
   hash:
-    md5: e470d224a7a5be1b1d021bded7abb536
-    sha256: 6901f91d398811e4ec89d7e20a69abac02a7bfebfaf073338b7ea3d1a99685b7
+    md5: 7249ce52789c3680e889e7335a2e1c3e
+    sha256: 008d610d6ec1d021ad678024afd5dcf534ff84d9c1e9d2877ff36d112c89896f
   category: main
   optional: false
 - name: xorg-libxt
@@ -6208,7 +6223,7 @@ package:
   category: main
   optional: false
 - name: xorg-libxtst
-  version: 1.2.5
+  version: 1.2.6
   manager: conda
   platform: linux-64
   dependencies:
@@ -6217,10 +6232,10 @@ package:
     xorg-libx11: '>=1.8.13,<2.0a0'
     xorg-libxext: '>=1.3.7,<2.0a0'
     xorg-libxi: '>=1.8.3,<2.0a0'
-  url: https://conda.anaconda.org/conda-forge/linux-64/xorg-libxtst-1.2.5-h7cc23a3_4.conda
+  url: https://conda.anaconda.org/conda-forge/linux-64/xorg-libxtst-1.2.6-h7cc23a3_0.conda
   hash:
-    md5: 752a5ac9322e0fbbc24146c1ce3ae44e
-    sha256: d66525e7b1c492aa179c6c55610fc8dfb0a9a62ea7d4fb9f904fa6af62127f61
+    md5: 05e756ed9e8b2358591d47f6b8939db4
+    sha256: 9d8e7a2db860da3f362284650b447a96688b834bdb3122707b04bae512a1a178
   category: main
   optional: false
 - name: xorg-libxxf86vm
