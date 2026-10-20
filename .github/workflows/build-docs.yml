@@ -24,7 +24,7 @@ jobs:
       SKIP_URL_CHECK: "1"
     steps:
       - name: Check out pull request merge ref
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: refs/pull/${{ inputs.pr_number }}/merge
 
