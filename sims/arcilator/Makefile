@@ -165,8 +165,12 @@ $(eval $(call arc_compile,$(arc_debug_dir),--observe-registers --observe-wires -
 # The shared filelists include every selected blackbox's HDL and C++ sources,
 # plus externally supplied IP. The native generated modules are replaced by the
 # Arcilator shell; they must never also be compiled into the Verilator model.
-$(arc_dir)/blackboxes.f: $(sim_common_files) $(BB_MODS_FILELIST) $(EXT_FILELISTS) $(EXTRA_SIM_SOURCES) $(arc_dir)/filelist-settings.json $(if $(filter native,$(ARC_RUNTIME)),$(TOP_SMEMS_FILE) $(MODEL_SMEMS_FILE)) | $(arc_dir)
+$(arc_dir)/blackboxes.f: $(sim_dir)/Makefile $(sim_common_files) $(BB_MODS_FILELIST) $(EXT_FILELISTS) $(EXTRA_SIM_SOURCES) $(arc_dir)/filelist-settings.json $(if $(filter native,$(ARC_RUNTIME)),$(TOP_SMEMS_FILE) $(MODEL_SMEMS_FILE)) | $(arc_dir)
 	awk '!/\.(h|svh|conf)$$/' $(BB_MODS_FILELIST) $(EXT_FILELISTS) > $@
+	# Newer firtool versions put peripheral drivers in the model filelist while
+	# leaving the blackbox filelist empty. Collect C/C++ from the complete list;
+	# native_build.py deduplicates sources shared with the blackbox list.
+	$(if $(filter native,$(ARC_RUNTIME)),awk '/\.(c|cc|cpp|cxx)$$/' $(sim_common_files) >> $@,true)
 	printf '%s\n' $(GEN_COLLATERAL_DIR)/TestDriver.v >> $@
 	$(if $(EXTRA_SIM_SOURCES),printf '%s\n' $(EXTRA_SIM_SOURCES) >> $@,true)
 	$(if $(filter native,$(ARC_RUNTIME)),printf '%s\n' $(TOP_SMEMS_FILE) $(MODEL_SMEMS_FILE) >> $@,true)
