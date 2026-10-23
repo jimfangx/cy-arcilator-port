@@ -1,0 +1,43 @@
+{
+  "status": "passed_stock_SV_16384_states_180224_fields",
+  "stock_sources_sha256": {
+    "/home/ubuntu/chipyard/sims/arcilator/output/development/native-joint-scala136-20261020T194449Z/chipyard/sims/arcilator/generated-src/chipyard.harness.TestHarness.ShuttleConfig/gen-collateral/EICG_wrapper.v": "3d66cf9dc6062f27cfe73ff9a926d187c9d40c9c35125a151978bdd6fcdfefbd",
+    "/home/ubuntu/chipyard/sims/arcilator/output/development/native-joint-scala136-20261020T194449Z/chipyard/sims/arcilator/generated-src/chipyard.harness.TestHarness.ShuttleConfig/gen-collateral/GenericDigitalInIOCell.v": "53a8e044bbb3bf282120750e4f06341c8d147607db862855966718dc3f19bf3a",
+    "/home/ubuntu/chipyard/sims/arcilator/output/development/native-joint-scala136-20261020T194449Z/chipyard/sims/arcilator/generated-src/chipyard.harness.TestHarness.ShuttleConfig/gen-collateral/GenericDigitalOutIOCell.v": "d780b882a217a23649d490101d5848e47b4da3ad6416845045dce1b51f5202bc",
+    "/home/ubuntu/chipyard/generators/testchipip/src/main/resources/testchipip/vsrc/ClockUtil.v": "58a9b3852ec63d122bcfbc5d230e9fa87ebfd72051916d0ad3c108da49784b1f"
+  },
+  "reference_source_sha256": "09a8b4e5bc3097a321228f148fc6d960bbf6cfa40e934f7fcd83e3334006add0",
+  "scope": "Verilator only generates independent validation evidence. Native builds/runs use no Verilator. Stock EICG/IOCell/ClockUtil sources unchanged. Explicit enable/data setup before clock edges.",
+  "build_returncode": 0,
+  "rows": 16384,
+  "expected_rows": 16384,
+  "raw_reference_sha256": "5cf070e172efe123dccda2b0ba5c2aba946bcd191c5719bbe837cee397819ebf",
+  "all_fields_match": true,
+  "reference": "reference.bin",
+  "reference_sha256": "01b0c7a72ffdb5e8ae7310754b625ca62b44a18ad42b43ed30aa56bf5871591c",
+  "reference_bytes": 180224,
+  "fields": [
+    "gated",
+    "chained",
+    "inverted",
+    "joined",
+    "nor_clock",
+    "read",
+    "written",
+    "count0",
+    "count1",
+    "count2",
+    "count3"
+  ],
+  "format": "16384 rows of11 one-byte unsigned fields, no header.",
+  "native_source_sha256": "75722c63e3454345e4eedb85d3b7d215c8719a2b1634b4b1e1b53574f4f9853e",
+  "sources_sha256": {
+    "GenericDigitalInIOCell.v": "53a8e044bbb3bf282120750e4f06341c8d147607db862855966718dc3f19bf3a",
+    "Reference.sv": "09a8b4e5bc3097a321228f148fc6d960bbf6cfa40e934f7fcd83e3334006add0",
+    "ClockUtil.v": "58a9b3852ec63d122bcfbc5d230e9fa87ebfd72051916d0ad3c108da49784b1f",
+    "EICG_wrapper.v": "3d66cf9dc6062f27cfe73ff9a926d187c9d40c9c35125a151978bdd6fcdfefbd",
+    "GenericDigitalOutIOCell.v": "d780b882a217a23649d490101d5848e47b4da3ad6416845045dce1b51f5202bc"
+  },
+  "tool": "Verilator5.022, unmodified selected stock SV sources; two-state disabled-output values",
+  "reproduce": "verilator --binary --timing -Wno-fatal --top-module Reference --Mdir obj_dir -j4 Reference.sv EICG_wrapper.v GenericDigitalInIOCell.v GenericDigitalOutIOCell.v ClockUtil.v; ./obj_dir/VReference; pack GLUE rows as described above"
+}

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Compile selected foreign RTL into CIRCT HW before native partitioning."""
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -292,7 +293,7 @@ def compile_rtl(args):
                                 circt_source=None,
                                 slang_source=None,
                                 slang_build=None,
-                                jobs=4))
+                                jobs=args.jobs))
     for (symbol, parameters), wrapper in variants.items():
         module, signature = declarations[symbol]
         if module not in modules:
@@ -320,6 +321,9 @@ def compile_rtl(args):
         if native:
             command.append(str(native_file))
         command.append(str(boundary))
+        source_metadata = args.work / (wrapper + '-sv-source.json')
+        if getattr(args, 'source_metadata', False):
+            command.append('--native-vpi-metadata=' + str(source_metadata))
         for directory in sorted({str(p.parent) for p in files}):
             command += ['-I', directory]
         command += libraries['flags']
@@ -564,6 +568,35 @@ def compile_rtl(args):
                  native_modules=[
                      unquote(target) for _, _, target, _ in native_imports
                  ]))
+        if getattr(args, 'source_metadata', False):
+            raw_metadata = source_metadata.read_bytes()
+            facts = json.loads(raw_metadata)
+            if (not isinstance(facts, dict) or
+                    facts.get('schema') != 'chipyard.arcilator.sv-source' or
+                    type(facts.get('version')) is not int or facts['version'] != 1 or
+                    facts.get('scope') != 'one-elaborated-compilation' or
+                    facts.get('symbol_identity') != 'snapshot-local-slang-address' or
+                    facts.get('mode') != 'import' or
+                    not isinstance(facts.get('design'), dict) or
+                    facts['design'].get('kind') != 'Root' or
+                    not isinstance(facts.get('time_scales'), list)):
+                raise ValueError('invalid native frontend source metadata: ' +
+                                 str(source_metadata))
+            def describe(path):
+                return dict(path=str(path.resolve()),
+                            sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+            metadata[-1]['sv_source_metadata'] = dict(
+                version=1, path=str(source_metadata.resolve()),
+                sha256=hashlib.sha256(raw_metadata).hexdigest(),
+                scope=facts['scope'], frontend_top=frontend_top,
+                command=[*command, '-o', str(early)],
+                command_inputs=[describe(path) for path in [source, *[
+                    p for p in files if p != source], *([native_file] if native else []), boundary]],
+                generated_sources=[describe(path) for path in [
+                    *([native_file] if native else []), boundary]],
+                omitted_test_drivers=[describe(Path(path)) for path in shlex.split(
+                    args.filelist.read_text(), comments=True) if
+                    Path(path).suffix in ('.v', '.sv') and Path(path).stem == 'TestDriver'])
 
     def replace_instance(match):
         prefix, symbol, parameters = match.groups()
@@ -601,11 +634,20 @@ if __name__ == '__main__':
         parser.add_argument('--' + name, required=True, type=Path)
     parser.add_argument('--flags', default='')
     parser.add_argument('--library-manifest', type=Path)
+    parser.add_argument('--source-metadata', action='store_true',
+                        help='retain detailed source AST/time-scale sidecars for VPI development')
     parser.add_argument('--cxx', default='c++')
+    parser.add_argument('--jobs', type=int,
+                        default=(len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity')
+                                 else os.cpu_count() or 1),
+                        help='frontend compilation jobs (default: available CPUs)')
     parser.add_argument('--frontend-patches',
                         choices=('auto', 'off'),
                         default='auto')
+    args = parser.parse_args()
+    if args.jobs < 1:
+        parser.error('--jobs must be positive')
     try:
-        compile_rtl(parser.parse_args())
+        compile_rtl(args)
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         parser.exit(1, f'native RTL import: {error}\n')

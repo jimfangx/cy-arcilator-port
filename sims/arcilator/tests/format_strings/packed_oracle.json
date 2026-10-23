@@ -1,0 +1,65 @@
+{
+  "status": "passed",
+  "reference": "Unmodified pinned Slang ScriptSession constant evaluator, independently linked to SDK libsvlang/libfmt; no native Arcilator formatting passes or runtime linked.",
+  "source": "/tmp/arcilator-packed-strings84/eval_packed.cpp",
+  "source_sha256": "3b93253e327311d9e877730ee6fb03e0d9ae7f5aa117485d73fe7afd41f80378",
+  "executable_sha256": "dac7543e4d73373b75b5844212fe5007499246564481efc8f022d25e61a46190",
+  "libraries_sha256": {
+    "/home/ubuntu/.cache/arcilator/firtool-1.162.0/lib/libsvlang.a": "c12abafe9fe6fd0404ede14e75377ce398bfbdafc767bcdce24535fcf8abb0ed",
+    "/home/ubuntu/.cache/arcilator/firtool-1.162.0/lib/libfmt.a": "61755ca9d35e2423fef1be44a3146d5a2a7d2fa4142266463fabb142e7060a9c"
+  },
+  "slang_revision": "44dc55f99b9c64971893013e7931e643fbedcf23",
+  "standard": {
+    "url": "https://rfsoc.mit.edu/6S965/_static/F25/documentation/1800-2017.pdf",
+    "sha256": "12e3dc7bafafca28af2b89ebc2761fb7a606d68716cf04c2d93c8617c78eebec",
+    "sections": [
+      "6.16",
+      "21.2.1.8",
+      "21.3.3"
+    ],
+    "assessment": "NUL bytes removed when forming string values; sformatf result follows string-output assignment rules. Together with the unmodified independent Slang evaluator, supports ABC without inserted spaces. Raw Icarus and Verilator outcomes retained as divergent references, not silently rewritten."
+  },
+  "cases": [
+    {
+      "expression": "$sformatf(\"%s\",32'h41004243)",
+      "length": 3,
+      "hex": "414243"
+    },
+    {
+      "expression": "string'(32'h41004243)",
+      "length": 3,
+      "hex": "414243"
+    },
+    {
+      "expression": "string'(\"A\\000BC\")",
+      "length": 3,
+      "hex": "414243"
+    },
+    {
+      "expression": "$sformatf(\"%s\",32'h00414243)",
+      "length": 3,
+      "hex": "414243"
+    },
+    {
+      "expression": "$sformatf(\"%s\",32'h41004200)",
+      "length": 2,
+      "hex": "4142"
+    },
+    {
+      "expression": "$sformatf(\"%s\",32'h0)",
+      "length": 0,
+      "hex": ""
+    },
+    {
+      "expression": "$sformatf(\"%8s\",32'h41004243)",
+      "length": 8,
+      "hex": "2020202020414243"
+    },
+    {
+      "expression": "$sformatf(\"%0s\",32'h41004243)",
+      "length": 3,
+      "hex": "414243"
+    }
+  ],
+  "completed_at": "2026-10-19T10:26:41.305265+00:00"
+}

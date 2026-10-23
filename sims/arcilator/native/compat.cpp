@@ -2,6 +2,7 @@
 #include "svdpi.h"
 #include "vpi_user.h"
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -23,6 +24,12 @@ ScopeRegistry &scopes() {
   return registry;
 }
 thread_local svScope current_scope = nullptr;
+struct VpiError {
+  int level;
+  char message[256];
+};
+thread_local VpiError vpi_error{};
+
 } // namespace
 chipyard_arc::DpiScope::DpiScope(std::string name)
     : full_name(std::move(name)) {
@@ -54,6 +61,11 @@ chipyard_arc::DpiScope::~DpiScope() {
 chipyard_arc::DpiContext::DpiContext(DpiScope &scope)
     : previous(std::exchange(current_scope, scope.handle())) {}
 chipyard_arc::DpiContext::~DpiContext() { current_scope = previous; }
+void chipyard_arc::clear_vpi_error() noexcept { vpi_error = {}; }
+void chipyard_arc::set_vpi_error(int level, const char *message) noexcept {
+  vpi_error.level = level;
+  std::snprintf(vpi_error.message, sizeof(vpi_error.message), "%s", message);
+}
 void chipyard_arc::command_args(int argc, char **argv) {
   saved_argc = argc;
   saved_argv = argv;
@@ -100,11 +112,25 @@ void *svGetUserData(const svScope scope, void *key) {
 }
 int svGetCallerInfo(const char **, int *) { return 0; }
 PLI_INT32 vpi_get_vlog_info(p_vpi_vlog_info info) {
+  chipyard_arc::clear_vpi_error();
   if (!info || !saved_argv)
     return 0;
   static char product[] = "Chipyard Arcilator native runtime";
   static char version[] = "1";
   *info = {saved_argc, saved_argv, product, version};
   return 1;
+}
+PLI_INT32 vpi_chk_error(p_vpi_error_info info) {
+  if (info) {
+    *info = {};
+    if (vpi_error.level) {
+      static char product[] = "Chipyard Arcilator native runtime";
+      static char code[] = "ARC_VPI";
+      *info = {
+          vpiPLI, vpi_error.level, vpi_error.message, product, code, nullptr,
+          0};
+    }
+  }
+  return vpi_error.level;
 }
 }

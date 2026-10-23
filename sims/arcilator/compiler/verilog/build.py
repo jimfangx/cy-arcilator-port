@@ -27,7 +27,7 @@ PATCHES = ('interface-arrays.patch', 'timing.patch',
            'unknown-comparisons.patch', 'dpi-context-scopes.patch',
            'dpi-source-hierarchy.patch', 'dpi-open-arrays.patch',
            'static-formals.patch', 'hierarchy-formats.patch', 'scope-lookups.patch',
-           'realtime-f64.patch', 'hierarchical-call-captures.patch', 'inertial-delays.patch', 'parenthesized-delays.patch', 'delay-precision.patch', 'rounded-real-casts.patch')
+           'realtime-f64.patch', 'hierarchical-call-captures.patch', 'inertial-delays.patch', 'parenthesized-delays.patch', 'delay-precision.patch', 'rounded-real-casts.patch', 'vpi-source-metadata.patch')
 
 
 def run(*command, **kwargs):
@@ -169,7 +169,10 @@ def main():
     parser.add_argument('--slang-build',
                         type=Path,
                         help='reuse matching generated Slang headers')
-    parser.add_argument('--jobs', type=int, default=4)
+    parser.add_argument('--jobs', type=int,
+                        default=(len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity')
+                                 else os.cpu_count() or 1),
+                        help='frontend compilation jobs (default: available CPUs)')
     args = parser.parse_args()
     if args.jobs < 1 or (args.slang_build and not args.slang_source):
         parser.error(

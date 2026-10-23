@@ -1,0 +1,7 @@
+module {
+  hw.module.extern @StaticFormals(in %clock: i1, in %reset: i1, in %enable_a: i1, in %enable_b: i1, in %use_default: i1, in %data: i8, out q0: i8, out q1: i8, out count0: i8, out count1: i8, out last0: i8, out last1: i8, out sticky0: i8, out sticky1: i8, out out0: i8, out out1: i8, out n0: i8, out n1: i8, out q2: i8, out count2: i8, out last2: i8, out sticky2: i8, out out2: i8, out n2: i8)
+  hw.module @StaticFormalsHarness(in %clock: i1, in %reset: i1, in %enable_a: i1, in %enable_b: i1, in %use_default: i1, in %data: i8, out q0: i8, out q1: i8, out count0: i8, out count1: i8, out last0: i8, out last1: i8, out sticky0: i8, out sticky1: i8, out out0: i8, out out1: i8, out n0: i8, out n1: i8, out q2: i8, out count2: i8, out last2: i8, out sticky2: i8, out out2: i8, out n2: i8) {
+    %q0, %q1, %count0, %count1, %last0, %last1, %sticky0, %sticky1, %out0, %out1, %n0, %n1, %q2, %count2, %last2, %sticky2, %out2, %n2 = hw.instance "dut" @StaticFormals(clock: %clock: i1, reset: %reset: i1, enable_a: %enable_a: i1, enable_b: %enable_b: i1, use_default: %use_default: i1, data: %data: i8) -> (q0: i8, q1: i8, count0: i8, count1: i8, last0: i8, last1: i8, sticky0: i8, sticky1: i8, out0: i8, out1: i8, n0: i8, n1: i8, q2: i8, count2: i8, last2: i8, sticky2: i8, out2: i8, n2: i8)
+    hw.output %q0, %q1, %count0, %count1, %last0, %last1, %sticky0, %sticky1, %out0, %out1, %n0, %n1, %q2, %count2, %last2, %sticky2, %out2, %n2 : i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8
+  }
+}

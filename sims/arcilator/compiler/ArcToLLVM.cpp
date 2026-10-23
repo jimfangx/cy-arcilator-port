@@ -42,6 +42,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinDialect.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Tools/Plugins/PassPlugin.h"
@@ -1440,6 +1441,9 @@ struct RuntimeModelOpLowering
 // ArrayRef patterns
 //===----------------------------------------------------------------------===//
 
+// Keep these copied lowering patterns local to this plugin; the SDK also
+// exports patterns with these names.
+namespace {
 size_t computeByteWidth(ArrayRefType type) {
   auto bitWidth = computeLLVMBitWidth(type);
   assert(bitWidth.has_value());
@@ -1520,7 +1524,29 @@ struct ArrayRefAllocOpLowering : public OpConversionPattern<ArrayRefAllocOp> {
     size_t elemByteWidth = computeElementByteWidth(arrayRefType);
     Type ptrTy = LLVM::LLVMPointerType::get(getContext());
     Type i8Ty = rewriter.getI8Type();
+    int fill = -1;
+    if (arrayRefType.getElementType().isInteger(1) && elemByteWidth == 1 &&
+        arrayRefType.getNumElements() >= 256 &&
+        initAttr.size() == arrayRefType.getNumElements()) {
+      size_t counts[2] = {0, 0};
+      for (Attribute field : initAttr)
+        if (auto integer = dyn_cast<IntegerAttr>(field))
+          if (integer.getType().isInteger(1))
+            ++counts[integer.getValue().getBoolValue()];
+      unsigned majority = counts[1] > counts[0];
+      if (counts[majority] >= initAttr.size() - initAttr.size() / 4) {
+        fill = majority;
+        auto byte = LLVM::ConstantOp::create(rewriter, loc, i8Ty, fill);
+        auto size = LLVM::ConstantOp::create(
+            rewriter, loc, rewriter.getI64Type(), initAttr.size());
+        LLVM::MemsetOp::create(rewriter, loc, alloc, byte, size,
+                               /*isVolatile=*/false);
+      }
+    }
     for (unsigned i = 0; i < arrayRefType.getNumElements(); ++i) {
+      auto integer = dyn_cast<IntegerAttr>(initAttr[i]);
+      if (fill >= 0 && integer && integer.getValue().getBoolValue() == fill)
+        continue;
       unsigned elemIndex = arrayRefType.getNumElements() - i - 1;
       Value elemOffset = LLVM::ConstantOp::create(
           rewriter, loc, rewriter.getI64Type(), elemIndex * elemByteWidth);
@@ -1548,7 +1574,40 @@ struct ArrayRefCreateOpLowering : public OpConversionPattern<ArrayRefCreateOp> {
     auto i8Ty = rewriter.getI8Type();
     size_t elemByteWidth = computeElementByteWidth(arrayRefType);
     auto elements = adaptor.getElements();
+    // A Boolean array uses one byte per element. Large lookup tables often
+    // have one constant value in nearly every entry; emit a byte fill and
+    // retain every differing/dynamic store in its original order. All scalar
+    // input values have already been evaluated before this operation.
+    int fill = -1;
+    SmallVector<int8_t> constants;
+    if (arrayRefType.getElementType().isInteger(1) && elemByteWidth == 1 &&
+        elements.size() >= 256 &&
+        elements.size() == arrayRefType.getNumElements()) {
+      size_t counts[2] = {0, 0};
+      for (Value element : op.getElements()) {
+        int8_t value = -1;
+        Attribute attribute;
+        if (matchPattern(element, m_Constant(&attribute)))
+          if (auto integer = dyn_cast<IntegerAttr>(attribute))
+            if (integer.getType().isInteger(1)) {
+              value = integer.getValue().getBoolValue();
+              ++counts[value];
+            }
+        constants.push_back(value);
+      }
+      unsigned majority = counts[1] > counts[0];
+      if (counts[majority] >= elements.size() - elements.size() / 4) {
+        fill = majority;
+        auto byte = LLVM::ConstantOp::create(rewriter, op.getLoc(), i8Ty, fill);
+        auto size = LLVM::ConstantOp::create(
+            rewriter, op.getLoc(), rewriter.getI64Type(), elements.size());
+        LLVM::MemsetOp::create(rewriter, op.getLoc(), alloc, byte, size,
+                               /*isVolatile=*/false);
+      }
+    }
     for (unsigned i = 0; i < elements.size(); ++i) {
+      if (fill >= 0 && constants[i] == fill)
+        continue;
       // Note: hardcoded for little endian targets.
       unsigned elemIndex = arrayRefType.getNumElements() - i - 1;
       Value elemOffset =
@@ -1778,6 +1837,8 @@ struct ArrayRefFromArrayOpLowering
     return success();
   }
 };
+
+} // namespace
 
 //===----------------------------------------------------------------------===//
 // Pass Implementation

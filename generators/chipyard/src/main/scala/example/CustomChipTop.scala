@@ -54,7 +54,7 @@ class CustomChipTop(implicit p: Parameters) extends ChipTop {
     }}
 
     // demonstrate accessing the iocellMap directly
-    val serialTLIOCells = iocellMap("interface testchipip.CanHavePeripheryTLSerial")
+    val serialTLIOCells = iocellMap(classOf[testchipip.serdes.CanHavePeripheryTLSerial].toString)
   }
 }
 

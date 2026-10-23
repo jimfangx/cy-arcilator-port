@@ -1,0 +1,23 @@
+{
+  "status": "recorded",
+  "samples": 12001,
+  "maximum_fs": 12000,
+  "source_sha256": "c62927806c2d4a9e45b75b523038de64741caa8bd958bb046d58c61762def44d",
+  "stimulus_sha256": "a338139c08faa7a77e66e82aeddbb57c1f34d3b77871cda22325e5e44e4a03c3",
+  "raw_reference_sha256": "b3f4c5bdb7f10b0f4fc0cc4871aa8415b48c0d113f768ac5609fc15cbefe7c23",
+  "reference_sha256": "928512162ae0ec1ba1db30c9f8a8a5050df4cf31296be7be1dd203787ad60436",
+  "compiler_sha256": "a6071e4b4a68feafca0c8ee0e6aa275eee9a43a108c62801cfd1eca6eab6d8a3",
+  "runtime_sha256": "a10bd7d4a0850308ac8c2c98115b6a3084f9be978307610f2a521190c28f4023",
+  "compile_command": [
+    "/tmp/arcilator-pure-scope82/oracle/usr/bin/iverilog",
+    "-B/tmp/arcilator-pure-scope82/oracle/usr/lib/x86_64-linux-gnu/ivl",
+    "-g2012",
+    "-s",
+    "Ref",
+    "-o",
+    "/home/ubuntu/chipyard/sims/arcilator/output/development/native-delayed-signals114-20261020T130329Z/work/precision-fixture/reference.vvp",
+    "/home/ubuntu/chipyard/sims/arcilator/output/development/native-delayed-signals114-20261020T130329Z/work/precision-fixture/native_delay_precision.sv",
+    "/home/ubuntu/chipyard/sims/arcilator/output/development/native-delayed-signals114-20261020T130329Z/work/precision-fixture/reference.sv"
+  ],
+  "scope": "Full original delayed-signal corpus retained including exact7750fs clock deadline, extended with original NVDLA real literal10ps/1ps, lexical100fs rounding, sub-fs fractional literal and composite expression before rounding, procedural waits, dynamic positive/negative real-to-int casts and ties away fromzero. Unknown startup bits mapzero only for native two-state comparison."
+}

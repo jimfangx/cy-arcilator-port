@@ -246,25 +246,41 @@ def copy_prefix(source, output, end, declarations):
         raise ValueError('flattened hardware is missing its outer module')
 
 
-def lower_special_ops(body, externs, wide_helpers, output=None):
+def lower_special_ops(body,
+                      externs,
+                      wide_helpers,
+                      output=None,
+                      native_combin=False):
     """Keep asynchronous state exact and lower assertions to native callbacks."""
     if output is not None:
         with LineSink(output) as lines:
-            _lower_special_ops(body, externs, wide_helpers, lines)
+            _lower_special_ops(body, externs, wide_helpers, lines,
+                               native_combin)
         return FileLines(output)
     lines = []
-    _lower_special_ops(body, externs, wide_helpers, lines)
+    _lower_special_ops(body, externs, wide_helpers, lines, native_combin)
     return '\n'.join(lines)
 
 
-def _lower_special_ops(body, externs, wide_helpers, lines):
+def _lower_special_ops(body,
+                       externs,
+                       wide_helpers,
+                       lines,
+                       native_combin=False):
     groups, aggregate_results = {}, []
     formats = {}
+    reserved = set()
     for line in body.splitlines():
+        if native_combin:
+            reserved.update(re.findall(SSA, line))
         m = re.match(r'\s*(' + SSA + r') = (sim\.fmt\..*)', line)
         if m:
             formats[m[1]] = m[2]
-    for line in body.splitlines():
+    source_lines = body.splitlines()
+    if native_combin:
+        from compiler.native_combin import lower_native_combin
+        source_lines = lower_native_combin(source_lines, externs, reserved)
+    for line in source_lines:
         if line.strip().startswith('sim.proc.print'):
             # Formatting operations must stay in the procedural region. If
             # outlined into arcs returning !sim.fstring, LLVM cannot fold them.
@@ -285,7 +301,8 @@ def _lower_special_ops(body, externs, wide_helpers, lines):
             line = map_code(line, lambda code: re.sub(SSA, clone, code))
             if 'chipyard.file_output' not in line:
                 line = procedural_guard('%arc_printf_enable', line, len(lines))
-        elif opcode(line) in ('func.call', 'call') and 'chipyard.native_print' in line:
+        elif opcode(line) in ('func.call',
+                              'call') and 'chipyard.native_print' in line:
             if 'chipyard.file_output' not in line:
                 line = procedural_guard('%arc_printf_enable', line, len(lines))
         if opcode(line) in ('comb.shl', 'comb.shru', 'comb.shrs'):
@@ -502,30 +519,45 @@ def prepare(args):
     temporal = plugin(tool, getattr(args, 'cxx', os.environ.get('CXX', 'c++')),
                       sim / 'generated-src/compiler',
                       sim / 'compiler/TemporalProperties.cpp')
-    hierarchy = plugin(tool, getattr(args, 'cxx', os.environ.get('CXX', 'c++')),
-                       sim / 'generated-src/compiler', sim / 'compiler/HierarchyFormats.cpp')
+    hierarchy = plugin(tool, getattr(args, 'cxx', os.environ.get('CXX',
+                                                                 'c++')),
+                       sim / 'generated-src/compiler',
+                       sim / 'compiler/HierarchyFormats.cpp')
     subprocess.run([
         args.circt_opt,
         str(normal), '--load-pass-plugin=' + str(properties),
         '--load-pass-plugin=' + str(temporal),
         '--load-pass-plugin=' + str(hierarchy),
-        '--pass-pipeline=builtin.module(arc-resolve-xmr,symbol-dce,chipyard-capture-hierarchy-formats{root=' + args.top + '},hw-flatten-modules,chipyard-resolve-hierarchy-formats{root=' + args.top + '},chipyard-lower-pointwise-properties,chipyard-lower-temporal-properties,canonicalize)',
+        '--pass-pipeline=builtin.module(arc-resolve-xmr,symbol-dce,chipyard-capture-hierarchy-formats{root='
+        + args.top +
+        '},hw-flatten-modules,chipyard-resolve-hierarchy-formats{root=' +
+        args.top +
+        '},chipyard-lower-pointwise-properties,chipyard-lower-temporal-properties,canonicalize)',
         '--mlir-print-unique-ssa-ids', '-o',
         str(flat)
     ],
                    check=True)
-    partition_flat(
-        flat, out, args.top, externs,
-        getattr(args, 'sparse_memory_min_bits', 1 << 20) if getattr(
-            args, 'native_sparse_memories', False) else None)
+    partition_flat(flat,
+                   out,
+                   args.top,
+                   externs,
+                   getattr(args, 'sparse_memory_min_bits', 1 << 20) if getattr(
+                       args, 'native_sparse_memories', False) else None,
+                   native_combin=getattr(args, 'native_combinational_models',
+                                         False))
 
 
-def partition_flat(flat, out, top, externs, memory_min_bits=None):
+def partition_flat(flat,
+                   out,
+                   top,
+                   externs,
+                   memory_min_bits=None,
+                   native_combin=False):
     with tempfile.TemporaryDirectory(dir=out,
                                      prefix='partition-text-') as temporary:
         with ExitStack() as files:
             _partition_flat(flat, out, top, externs, Path(temporary), files,
-                            memory_min_bits)
+                            memory_min_bits, native_combin)
 
 
 def _partition_flat(flat,
@@ -534,7 +566,8 @@ def _partition_flat(flat,
                     externs,
                     work,
                     files,
-                    memory_min_bits=None):
+                    memory_min_bits=None,
+                    native_combin=False):
     signature, root_start, body_start, body_end, tail_start = root_range(
         flat, top)
     source_body = FileLines(flat, body_start, body_end)
@@ -576,7 +609,7 @@ def _partition_flat(flat,
     inputs = [('arc_printf_enable', 'i1'), ('arc_stop_enable', 'i1')]
     wide_helpers = set()
     root_body = lower_special_ops(source_body, externs, wide_helpers,
-                                  work / 'special-body.mlir')
+                                  work / 'special-body.mlir', native_combin)
     if memory_min_bits is not None:
         from compiler.memories import lower_memories
         memory_body = files.enter_context(LineSink(work / 'memory-body.mlir'))
@@ -735,13 +768,14 @@ def _partition_flat(flat,
     body.append('    hw.output' + (' ' + ', '.join(vals) + ' : ' +
                                    ', '.join(types) if vals else ''))
     body.close()
-    declarations = '\n'.join('  func.func private @' + name + '()'
+    declarations = '\n'.join('  func.func private @' + name +
+                             '() attributes {chipyard.no_output_readback}'
                              for name in ('chipyard_arc_assert_fail',
                                           'chipyard_arc_finish',
                                           'chipyard_arc_stop_fail'))
-    declarations += '\n  func.func private @chipyard_arc_guard(i32) -> i32'
+    declarations += '\n  func.func private @chipyard_arc_guard(i32) -> i32 attributes {chipyard.no_output_readback}'
     declarations += ''.join(
-        f'\n  func.func private @{name}(i{bits}, i{bits}) -> i{bits}'
+        f'\n  func.func private @{name}(i{bits}, i{bits}) -> i{bits} attributes {{chipyard.no_output_readback, chipyard.native_pure_wide_shift}}'
         for name, bits in sorted(wide_helpers))
     target = out / 'partitioned.mlir'
     with tempfile.NamedTemporaryFile(dir=out,
@@ -870,6 +904,10 @@ if __name__ == '__main__':
     parser.add_argument('--circt-opt', default='circt-opt')
     parser.add_argument('--cxx', default=os.environ.get('CXX', 'c++'))
     parser.add_argument('--native-sparse-memories', action='store_true')
+    parser.add_argument(
+        '--native-combinational-models',
+        action='store_true',
+        help='compile scalar IO/clock logic; retain clock-enable latches')
     parser.add_argument('--sparse-memory-min-bits', type=int, default=1 << 20)
     try:
         prepare(parser.parse_args())

@@ -22,6 +22,7 @@ void Runtime::add_export(const std::string &scope, const std::string &name,
                          unsigned result_bits, std::vector<unsigned> widths,
                          std::vector<bool> references,
                          std::vector<Signal> captures, std::string layout) {
+  idle_clock_model = nullptr;
   if (!entry || widths.size() != references.size() || formals > widths.size() ||
       widths.size() - formals != captures.size() ||
       std::any_of(widths.begin(), widths.end(),
@@ -31,6 +32,7 @@ void Runtime::add_export(const std::string &scope, const std::string &name,
   for (unsigned i = formals; i < widths.size(); i++)
     if (!references[i])
       throw std::runtime_error("DPI capture is not a reference: " + name);
+  filtered_convergence = false;
   owned_scope(scope);
   if (!dpi_exports
            .emplace(std::make_pair(scope, name),

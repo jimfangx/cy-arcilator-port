@@ -6,6 +6,8 @@
 #include <vector>
 namespace chipyard_arc {
 void command_args(int argc, char **argv);
+void clear_vpi_error() noexcept;
+void set_vpi_error(int level, const char *message) noexcept;
 // Native scopes have the same lifetime as their model/binding. They identify
 // native callbacks and the physical instance paths of compiled SV exports.
 class DpiScope {

@@ -1,0 +1,233 @@
+--- a/ImportVerilog.cpp
++++ b/ImportVerilog.cpp
+@@ -27,6 +27,13 @@
+ #include "llvm/ADT/Hashing.h"
+ #include "llvm/Support/SourceMgr.h"
+ 
++#include "llvm/Support/FileSystem.h"
++#include "llvm/Support/ToolOutputFile.h"
++#include "slang/ast/ASTSerializer.h"
++#include "slang/ast/symbols/CompilationUnitSymbols.h"
++#include "slang/text/Json.h"
++#include <ostream>
++#include <streambuf>
+ #include "slang/analysis/AnalysisManager.h"
+ #include "slang/diagnostics/DiagnosticClient.h"
+ #include "slang/diagnostics/Diagnostics.h"
+@@ -306,6 +313,137 @@
+ 
+ /// Parse and elaborate the prepared source files, and populate the given MLIR
+ /// `module` with corresponding operations.
++// Detailed source facts for one elaborated Slang compilation. This does not
++// infer a whole native model's timebase from independently imported wrappers.
++extern "C" const char *chipyard_arc_vpi_metadata_path() __attribute__((weak));
++namespace {
++class MetadataStreamBuffer : public std::streambuf {
++  llvm::raw_ostream &output;
++  std::streamsize xsputn(const char *s, std::streamsize count) override {
++    output.write(s, size_t(count));
++    return count;
++  }
++  int_type overflow(int_type value) override {
++    if (!traits_type::eq_int_type(value, traits_type::eof()))
++      output << traits_type::to_char_type(value);
++    return traits_type::not_eof(value);
++  }
++public:
++  explicit MetadataStreamBuffer(llvm::raw_ostream &output) : output(output) {}
++};
++
++LogicalResult emitNativeVpiMetadata(ModuleOp module,
++                                    slang::ast::Compilation &compilation,
++                                    const ImportVerilogOptions &options) {
++  if (!chipyard_arc_vpi_metadata_path)
++    return success();
++  const char *filename = chipyard_arc_vpi_metadata_path();
++  if (!filename || !*filename)
++    return success();
++  int fd;
++  SmallString<256> temporary;
++  auto error = llvm::sys::fs::createUniqueFile(
++      Twine(filename) + ".tmp-%%%%%%", fd, temporary);
++  if (error)
++    return module.emitError("cannot create native VPI source metadata: ")
++           << error.message();
++  llvm::ToolOutputFile file(temporary, fd);
++  MetadataStreamBuffer buffer(file.os());
++  std::ostream output(&buffer);
++  slang::JsonWriter writer;
++  writer.setPrettyPrint(true);
++  slang::ast::ASTSerializer serializer(compilation, writer);
++  serializer.setIncludeAddresses(true);
++  serializer.setIncludeSourceInfo(true);
++  serializer.setDetailedTypeInfo(true);
++  // Observation must not evaluate otherwise unused source expressions.
++  serializer.setTryConstantFold(false);
++  serializer.startObject();
++  serializer.write("schema", std::string_view("chipyard.arcilator.sv-source"));
++  serializer.write("version", int64_t(1));
++  serializer.write("slang_version", circt::getSlangVersion());
++  serializer.write("scope", std::string_view("one-elaborated-compilation"));
++  serializer.write("symbol_identity", std::string_view("snapshot-local-slang-address"));
++  serializer.write("mode", options.mode == ImportVerilogOptions::Mode::OnlyLint
++                               ? std::string_view("lint")
++                               : std::string_view("import"));
++  serializer.startArray("time_scales");
++  auto units = compilation.getCompilationUnits();
++  auto addScale = [&](const slang::ast::Symbol &symbol, std::string_view kind,
++                      std::optional<slang::TimeScale> resolved) {
++    int64_t unit = -1;
++    std::string library;
++    for (auto *parent = &symbol; parent;) {
++      if (auto *scope = parent->as_if<slang::ast::CompilationUnitSymbol>()) {
++        library = scope->sourceLibrary.name;
++        for (auto [index, candidate] : llvm::enumerate(units))
++          if (scope == candidate) unit = index;
++        break;
++      }
++      auto *scope = parent->getParentScope();
++      parent = scope ? &scope->asSymbol() : nullptr;
++    }
++    if (auto *definition = symbol.as_if<slang::ast::DefinitionSymbol>())
++      library = definition->sourceLibrary.name;
++    auto inFS = [](slang::TimeScaleValue value) {
++      uint64_t result = static_cast<uint64_t>(value.magnitude);
++      for (unsigned unit = static_cast<unsigned>(value.unit); unit < 5; ++unit)
++        result *= 1000;
++      return result;
++    };
++    auto scale = resolved.value_or(slang::TimeScale());
++    serializer.startObject();
++    serializer.write("kind", kind);
++    serializer.write("name", symbol.getHierarchicalPath());
++    serializer.write("compilation_unit", unit);
++    serializer.write("source_library", library);
++    serializer.write("timeunit_fs", inFS(scale.base));
++    serializer.write("timeprecision_fs", inFS(scale.precision));
++    serializer.write("resolved", resolved.has_value());
++    if (symbol.location && compilation.getSourceManager()) {
++      auto &manager = *compilation.getSourceManager();
++      serializer.write("source_file", manager.getFileName(symbol.location));
++      serializer.write("source_line", manager.getLineNumber(symbol.location));
++    }
++    serializer.endObject();
++  };
++  for (auto *unit : units)
++    addScale(*unit, "compilation_unit", unit->getTimeScale());
++  for (auto *package : compilation.getPackages())
++    if (package->getSyntax())
++      addScale(*package, "package", package->getTimeScale());
++  for (auto *symbol : compilation.getDefinitions())
++    if (auto *definition = symbol->as_if<slang::ast::DefinitionSymbol>())
++      addScale(*definition, definition->getKindString(), definition->timeScale);
++  serializer.endArray();
++  serializer.writeProperty("design");
++  serializer.serialize(compilation.getRoot());
++  writer.flushTo(output);
++  serializer.startArray("definitions");
++  for (auto *definition : compilation.getDefinitions()) {
++    serializer.serialize(*definition);
++    writer.flushTo(output);
++  }
++  serializer.endArray();
++  serializer.endObject();
++  writer.writeNewLine();
++  writer.flushTo(output);
++  output.flush();
++  file.os().flush();
++  if (file.os().has_error()) {
++    auto error = file.os().error();
++    file.os().clear_error();
++    return module.emitError("cannot write native VPI source metadata: ")
++           << error.message();
++  }
++  if (auto error = llvm::sys::fs::rename(temporary, filename))
++    return module.emitError("cannot publish native VPI source metadata: ")
++           << error.message();
++  file.keep();
++  return success();
++}
++} // namespace
++
+ LogicalResult ImportDriver::importVerilog(ModuleOp module) {
+   // Parse the input.
+   auto parseTimer = ts.nest("Verilog parser");
+@@ -342,6 +480,9 @@
+   if (!parseSuccess || driver.diagEngine.getNumErrors() > 0)
+     return failure();
+   compileTimer.stop();
++
++  if (failed(emitNativeVpiMetadata(module, *compilation, options)))
++    return failure();
+ 
+   // If we were only supposed to lint the input, return here. This leaves the
+   // module empty, but any Slang linting messages got reported as diagnostics.
+--- a/circt-verilog.cpp
++++ b/circt-verilog.cpp
+@@ -42,6 +42,8 @@
+ #include "mlir/Pass/PassManager.h"
+ #include "mlir/Support/FileUtilities.h"
+ #include "llvm/Support/CommandLine.h"
++#include "llvm/Support/FileSystem.h"
++#include "llvm/Support/Path.h"
+ #include "llvm/Support/InitLLVM.h"
+ #include "llvm/Support/SourceMgr.h"
+ #include "llvm/Support/ToolOutputFile.h"
+@@ -89,6 +91,11 @@
+   cl::opt<std::string> outputFilename{
+       "o", cl::desc("Output filename (`-` for stdout)"),
+       cl::value_desc("filename"), cl::init("-"), cl::cat(cat)};
++
++  cl::opt<std::string> nativeVpiMetadata{
++      "native-vpi-metadata",
++      cl::desc("Write detailed source AST and resolved time-scale facts as JSON"),
++      cl::value_desc("filename"), cl::init(""), cl::cat(cat)};
+ 
+   cl::opt<bool> emitBytecode{
+       "emit-bytecode", cl::desc("Emit bytecode when generating MLIR output"),
+@@ -311,6 +318,10 @@
+ } // namespace
+ 
+ static CLOptions opts;
++
++extern "C" const char *chipyard_arc_vpi_metadata_path() {
++  return opts.nativeVpiMetadata.c_str();
++}
+ 
+ /// Check output stream before writing bytecode to it.
+ /// Warn and return true if output is known to be displayed.
+@@ -506,6 +517,34 @@
+     opts.format = *detectedFormat;
+   }
+ 
++  if (!opts.nativeVpiMetadata.empty()) {
++    if (opts.format != Format::SV ||
++        opts.loweringMode == LoweringMode::OnlyParse ||
++        opts.loweringMode == LoweringMode::OnlyPreprocess ||
++        opts.nativeVpiMetadata == "-") {
++      WithColor::error() << "native VPI metadata requires elaborated SV and a named JSON output\n";
++      return failure();
++    }
++    auto samePath = [](StringRef a, StringRef b) {
++      if (a == b) return true;
++      SmallString<256> left(a), right(b);
++      if (llvm::sys::fs::make_absolute(left) ||
++          llvm::sys::fs::make_absolute(right)) return false;
++      llvm::sys::path::remove_dots(left, true);
++      llvm::sys::path::remove_dots(right, true);
++      return left == right || llvm::sys::fs::equivalent(left, right);
++    };
++    if (samePath(opts.nativeVpiMetadata, opts.outputFilename)) {
++      WithColor::error() << "native VPI metadata and IR outputs must be different files\n";
++      return failure();
++    }
++    for (const auto &input : opts.inputFilenames)
++      if (samePath(opts.nativeVpiMetadata, input)) {
++        WithColor::error() << "native VPI metadata cannot overwrite an input file\n";
++        return failure();
++      }
++  }
++
+   // Open the input files.
+   llvm::SourceMgr sourceMgr;
+   DenseSet<StringRef> seenInputFilenames;

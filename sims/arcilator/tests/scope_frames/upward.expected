@@ -1,0 +1,6 @@
+SCOPE upward=[UpTop.first.target.note] n=5
+SCOPE upward_caller=[UpTop.first.caller.call_peer] n=8
+SCOPE upward_result=8 caller=[UpTop.first.caller.boot]
+SCOPE upward=[UpTop.second.target.note] n=5
+SCOPE upward_caller=[UpTop.second.caller.call_peer] n=8
+SCOPE upward_result=8 caller=[UpTop.second.caller.boot]

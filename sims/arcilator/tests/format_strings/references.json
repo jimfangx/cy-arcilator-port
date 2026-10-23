@@ -1,0 +1,25 @@
+{
+  "reference": "Original Icarus12 shared-function corpus; packed embedded-NUL field verified independently against unmodified Slang and string-value rules. Raw stock outputs retained.",
+  "sources_sha256": {
+    "functions.svh": "c7209541009595b75c0eb415190f886ace8dbc1b636f53341916f059233feec3",
+    "oracle.sv": "89a42e1163466bc91881c36567e0ee17aab1243dd3a5a1e9ab14ec97fe206e10",
+    "packed_oracle.cpp": "3b93253e327311d9e877730ee6fb03e0d9ae7f5aa117485d73fe7afd41f80378",
+    "packed_oracle.json": "93ec13f023e01dc4849e36f3bba57a0b2fba9e55de06a5f1b85a452a3adc50dd"
+  },
+  "records": 38,
+  "raw_outputs_sha256": {
+    "reference-0.txt": "32bbe738eb368bdb1b856150bfb0c04ce61c75a1d0af1ef4ca7c1427096b78ea",
+    "reference-1.txt": "a4ea1c3696e9c9dbf6280d5e637ffc3d83a9982aff05d938a423625a00ba3683"
+  },
+  "outputs_sha256": {
+    "expected-0.txt": "b69fdc477eb670c9d02bd4fb8643d78ec0120d1d469ef152721a5ebe5f804ff5",
+    "expected-1.txt": "8a78d2f03c5e1717225009dbb3823ec32e3383b1408b3ca18c21619cd16c2717"
+  },
+  "packed_constant": {
+    "oracle": "packed_oracle.json",
+    "case": 0,
+    "raw_field": " p= ABC]",
+    "expected_field": " p=ABC]",
+    "records_per_file": 19
+  }
+}

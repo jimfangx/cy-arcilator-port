@@ -2,10 +2,12 @@
 #include "runtime.h"
 #include "svdpi.h"
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <deque>
 #include <random>
+#include <type_traits>
 
 // Weak declarations let a binding diagnose missing selected driver sources;
 // configurations do not need to link drivers for peripherals they do not use.
@@ -35,14 +37,31 @@ void register_spike_bindings();
 void register_analog_bindings();
 namespace {
 class AsyncBank : public Binding {
+  Signal clock_signal{}, reset_signal{}, data_signal{}, reset_data_signal{},
+      output_signal{};
+
 public:
   using Binding::Binding;
+  void initialize() override {
+    clock_signal = port("clock");
+    reset_signal = port("reset");
+    data_signal = port("d");
+    reset_data_signal = port("reset_data");
+    output_signal = port("q");
+  }
   void sample() override {
-    bool clock = get("clock"), reset = get("reset");
+    bool clock = clock_signal.get(), reset = reset_signal.get();
     if ((clock && !old_clock) || (reset && !old_reset))
-      stage("q", port(reset ? "reset_data" : "d").copy());
+      pending.emplace_back(output_signal,
+                           (reset ? reset_data_signal : data_signal).copy());
     old_clock = clock;
     old_reset = reset;
+  }
+
+public:
+  constexpr BindingCallbackContract<AsyncBank>
+  native_callback_contract() const {
+    return reviewed_base_callback_contract<AsyncBank>();
   }
 };
 
@@ -111,6 +130,12 @@ public:
     if (input.bits % 8)
       result.back() &= (1u << (input.bits % 8)) - 1;
     return port("out").assign(result);
+  }
+
+public:
+  constexpr BindingCallbackContract<WideShift>
+  native_callback_contract() const {
+    return reviewed_base_callback_contract<WideShift>();
   }
 };
 
@@ -308,6 +333,12 @@ public:
     pending_writes.clear();
     return changed;
   }
+
+public:
+  constexpr BindingCallbackContract<SparseMemory>
+  native_callback_contract() const {
+    return reviewed_base_callback_contract<SparseMemory>();
+  }
 };
 
 // Residual LLHD references use this storage when register inference cannot
@@ -394,6 +425,12 @@ public:
     delayed.clear();
     return port("version").set(storage->revision) | changed;
   }
+
+public:
+  constexpr BindingCallbackContract<SignalMemory>
+  native_callback_contract() const {
+    return reviewed_base_callback_contract<SignalMemory>();
+  }
 };
 
 // Every delay owns its history for this physical instance and Runtime.
@@ -417,7 +454,8 @@ public:
       delay_input = delayPort->second;
     inertial = number("INERTIAL") != 0;
     if ((!delay_input.data && !delay) || delay == never ||
-        (delay_input.data && delay_input.bits != 64) || input.bits != output.bits)
+        (delay_input.data && delay_input.bits != 64) ||
+        input.bits != output.bits)
       throw std::runtime_error("invalid native delayed-signal layout");
     output.assign(integer_bits(text("INIT", "0"), output.bits, 0));
   }
@@ -455,6 +493,11 @@ public:
     if (it->second.empty())
       events.erase(it);
   }
+
+public:
+  constexpr BindingCallbackContract<Delay> native_callback_contract() const {
+    return reviewed_base_callback_contract<Delay>();
+  }
 };
 
 class SignalState : public Binding {
@@ -468,6 +511,12 @@ public:
   void sample() override {
     if (get("write"))
       stage("q", port("value").copy());
+  }
+
+public:
+  constexpr BindingCallbackContract<SignalState>
+  native_callback_contract() const {
+    return reviewed_base_callback_contract<SignalState>();
   }
 };
 
@@ -497,6 +546,11 @@ public:
     return changed;
   }
   void sample() override {}
+
+public:
+  constexpr BindingCallbackContract<Latch> native_callback_contract() const {
+    return reviewed_base_callback_contract<Latch>();
+  }
 };
 
 class FeedbackWire : public Binding {
@@ -510,6 +564,12 @@ public:
   bool combinational() override {
     return port("q").assign(port("value").copy());
   }
+
+public:
+  constexpr BindingCallbackContract<FeedbackWire>
+  native_callback_contract() const {
+    return reviewed_base_callback_contract<FeedbackWire>();
+  }
 };
 
 class Combinational : public Binding {
@@ -520,13 +580,32 @@ public:
   void initialize() override {
     if (module == "plusarg_reader") {
       auto format = text("FORMAT");
-      auto percent = format.find('%');
-      if (percent == std::string::npos)
+      std::string prefix;
+      size_t position = 0;
+      char code = 0;
+      while (position < format.size()) {
+        char character = format[position++];
+        if (character != '%') {
+          prefix += character;
+          continue;
+        }
+        while (position < format.size() && format[position] == '0')
+          ++position;
+        if (position == format.size())
+          break;
+        character = format[position++];
+        if (character == '%') {
+          prefix += character;
+          continue;
+        }
+        code = std::tolower(static_cast<unsigned char>(character));
+        break;
+      }
+      if (!code)
         throw std::runtime_error("invalid plusarg_reader format");
-      auto value = runtime.option(format.substr(0, percent));
+      auto value = runtime.option(prefix);
       auto parsed = integer_bits(text("DEFAULT", "0"), port("out").bits, 0);
       if (!value.empty()) {
-        char code = format.at(percent + 1);
         unsigned base = code == 'h' || code == 'x' ? 16
                         : code == 'b'              ? 2
                         : code == 'o'              ? 8
@@ -560,6 +639,12 @@ public:
       return port("clockOut").set(!(get("clockIn") || get("signalIn")));
     throw std::runtime_error("incomplete native combinational binding " +
                              module);
+  }
+
+public:
+  constexpr BindingCallbackContract<Combinational>
+  native_callback_contract() const {
+    return reviewed_base_callback_contract<Combinational>();
   }
 };
 class ClockSource : public Binding {
@@ -595,6 +680,12 @@ public:
     port("clk").set(!get("clk") && get("power") && !get("gate"));
     next += half;
   }
+
+public:
+  constexpr BindingCallbackContract<ClockSource>
+  native_callback_contract() const {
+    return reviewed_base_callback_contract<ClockSource>();
+  }
 };
 class ClockFlop : public Binding {
 public:
@@ -604,6 +695,12 @@ public:
     if (clock && !old_clock)
       stage("clockOut", get("d"));
     old_clock = clock;
+  }
+
+public:
+  constexpr BindingCallbackContract<ClockFlop>
+  native_callback_contract() const {
+    return reviewed_base_callback_contract<ClockFlop>();
   }
 };
 class TSI : public Binding {
@@ -634,6 +731,11 @@ public:
     stage("tsi_in_bits", uint32_t(bits));
     stage("exit", uint32_t(exit));
   }
+
+public:
+  constexpr BindingCallbackContract<TSI> native_callback_contract() const {
+    return reviewed_base_callback_contract<TSI>();
+  }
 };
 class UART : public Binding {
   unsigned char valid = 0, ready = 0;
@@ -663,6 +765,11 @@ public:
     stage("serial_in_valid", valid);
     stage("serial_in_bits", uint8_t(bits));
   }
+
+public:
+  constexpr BindingCallbackContract<UART> native_callback_contract() const {
+    return reviewed_base_callback_contract<UART>();
+  }
 };
 class DRAM : public Binding {
   void *channel = nullptr;
@@ -686,9 +793,10 @@ public:
     if (!get("reset")) {
       if (!channel)
         channel = memory_init(number("CHIP_ID"), number("MEM_SIZE"),
-                              number("DATA_BITS") / 8, number("LINE_SIZE"),
-                              number("ID_BITS"), number("CLOCK_HZ"),
-                              number("MEM_BASE"), number("ADDR_BITS"));
+                              number("WORD_SIZE", number("DATA_BITS") / 8),
+                              number("LINE_SIZE"), number("ID_BITS"),
+                              number("CLOCK_HZ"), number("MEM_BASE"),
+                              number("ADDR_BITS"));
       auto write = port("axi_w_bits_data").copy();
       OpenArray wa{write.data(), write.size(), 1},
           ra{r_data.data(), r_data.size(), 1};
@@ -712,6 +820,11 @@ public:
     stage("axi_w_ready", w);
     stage("axi_r_valid", rv);
     stage("axi_b_valid", bv);
+  }
+
+public:
+  constexpr BindingCallbackContract<DRAM> native_callback_contract() const {
+    return reviewed_base_callback_contract<DRAM>();
   }
 };
 class JTAG : public Binding {
@@ -781,10 +894,37 @@ public:
       output_at = never;
     }
   }
+
+public:
+  constexpr BindingCallbackContract<JTAG> native_callback_contract() const {
+    return reviewed_base_callback_contract<JTAG>();
+  }
+};
+// Reviewed built-ins report all combinational changes through the host
+// fixed-point interface. Their C drivers run in sample(), outside evaluation.
+// A future model added to models.def keeps the default until reviewed here.
+template <class T> struct OutputSafeBuiltin : T {
+  using T::T;
+  bool output_convergence_safe() const override {
+    return std::is_same_v<T, AsyncBank> || std::is_same_v<T, SparseMemory> ||
+           std::is_same_v<T, SignalState> || std::is_same_v<T, Delay> ||
+           std::is_same_v<T, SignalMemory> || std::is_same_v<T, Latch> ||
+           std::is_same_v<T, FeedbackWire> || std::is_same_v<T, WideShift> ||
+           std::is_same_v<T, ClockSource> || std::is_same_v<T, ClockFlop> ||
+           std::is_same_v<T, Combinational> || std::is_same_v<T, TSI> ||
+           std::is_same_v<T, UART> || std::is_same_v<T, DRAM> ||
+           std::is_same_v<T, JTAG>;
+  }
+
+public:
+  constexpr BindingCallbackContract<OutputSafeBuiltin>
+  native_callback_contract() const {
+    return {detail::declared_binding_callbacks(static_cast<const T &>(*this))};
+  }
 };
 template <class T> void add(const std::string &name) {
   register_binding(name, [](Runtime &r, const std::string &n) {
-    return std::make_unique<T>(r, n);
+    return make_binding_instance<OutputSafeBuiltin<T>>(r, n);
   });
 }
 } // namespace

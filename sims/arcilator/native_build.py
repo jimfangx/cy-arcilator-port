@@ -3,6 +3,7 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import os
 import shlex
 import subprocess
 
@@ -19,17 +20,24 @@ def main():
     parser.add_argument('--cxxflags', default='')
     parser.add_argument('--cflags', default='')
     parser.add_argument('--ldflags', default='')
-    parser.add_argument('--jobs', type=int, default=4)
+    parser.add_argument('--jobs', type=int,
+                        default=(len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity')
+                                 else os.cpu_count() or 1),
+                        help='parallel C/C++ compilations (default: available CPUs)')
     args = parser.parse_args()
+    if args.jobs < 1:
+        parser.error('--jobs must be positive')
     sim = Path(__file__).resolve().parent
     sources = [
-        args.main, sim / 'native/runtime.cpp', sim / 'native/exports.cpp',
+        sim / 'native/vpi_lifecycle.cpp', args.main,
+        sim / 'native/runtime.cpp', sim / 'native/exports.cpp',
         sim / 'native/strings.cpp', sim / 'native/contexts.cpp', sim / 'native/readmem.cpp',
         sim / 'native/evaluation.cpp', sim / 'native/format.cpp',
         sim / 'native/files.cpp', sim / 'native/compat.cpp', sim / 'native/open_arrays.cpp',
         sim / 'native/bindings.cpp', sim / 'native/peripherals.cpp',
         sim / 'native/cosim.cpp', sim / 'native/spike.cpp',
-        sim / 'native/analog.cpp', sim / 'native/additional.cpp'
+        sim / 'native/analog.cpp', sim / 'native/analog_nets.cpp',
+        sim / 'native/additional.cpp'
     ]
     for token in shlex.split(args.filelist.read_text(), comments=True):
         path = Path(token)

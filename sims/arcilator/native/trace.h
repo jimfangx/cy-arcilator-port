@@ -36,7 +36,7 @@ public:
     if (header) throw std::runtime_error("cannot add a native waveform signal after simulation starts");
     if (name.find_first_of(" \t\r\n") != std::string::npos)
       throw std::runtime_error("native waveform signal contains whitespace: " + name);
-    entries.push_back({name, data, bits, std::vector<uint8_t>((bits + 7) / 8)});
+    entries.push_back({name, data, bits, std::vector<uint8_t>((size_t(bits) + 7) / 8)});
   }
   void sample(uint64_t time) {
     if (!file.is_open()) return;

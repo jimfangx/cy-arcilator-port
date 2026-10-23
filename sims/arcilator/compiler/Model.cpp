@@ -1,4 +1,5 @@
 // Late array normalization, allocated-model outlining, and SDK layout export.
+#include "WideArithmetic.h"
 #include "circt/Dialect/Arc/ArcOps.h"
 #include "circt/Dialect/Arc/ModelInfo.h"
 #include "circt/Dialect/Comb/CombOps.h"
@@ -77,12 +78,20 @@ static Value maskDPIWord(OpBuilder &builder, Location loc, Value value,
 // can otherwise execute on every model evaluation, including stable settles.
 struct SensitizeDPI : PassWrapper<SensitizeDPI, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SensitizeDPI)
+  SensitizeDPI() = default;
+  SensitizeDPI(const SensitizeDPI &other) : PassWrapper(other) {}
+  Option<bool> freezeSampling{*this, "freeze-sampling", llvm::cl::init(false)};
   StringRef getArgument() const override { return "chipyard-sensitize-dpi"; }
   void getDependentDialects(DialectRegistry &registry) const override {
     registry
         .insert<llhd::LLHDDialect, hw::HWDialect, comb::CombDialect,
                 arith::ArithDialect, cf::ControlFlowDialect, scf::SCFDialect,
                 seq::SeqDialect, func::FuncDialect, LLVM::LLVMDialect>();
+  }
+  // Only the generated, byte-ABI wide-shift helper is a pure calculation.
+  // no_output_readback alone also marks diagnostic helpers and is insufficient.
+  bool pureWideShift(sim::DPICallOp call, SymbolTableCollection &symbols) {
+    return chipyard_arc_compiler::wideShiftMode(call, symbols).has_value();
   }
   bool observable(Type type) {
     return isa<FloatType, seq::ClockType>(type) || hw::getBitWidth(type) >= 0;
@@ -172,8 +181,9 @@ struct SensitizeDPI : PassWrapper<SensitizeDPI, OperationPass<ModuleOp>> {
   }
   void runOnOperation() override {
     SmallVector<sim::DPICallOp> bare, enabled;
+    SymbolTableCollection symbols;
     getOperation().walk([&](sim::DPICallOp call) {
-      if (call.getClock())
+      if (call.getClock() || pureWideShift(call, symbols))
         return;
       if (isa<hw::HWModuleOp>(call->getParentOp()))
         bare.push_back(call);
@@ -285,6 +295,29 @@ struct SensitizeDPI : PassWrapper<SensitizeDPI, OperationPass<ModuleOp>> {
       getOperation()->setAttr("chipyard.sampling_inputs",
                               names.getDictionary(&getContext()));
     }
+    func::FuncOp samplingMarker;
+    if (freezeSampling && !regions.empty()) {
+      OpBuilder top(getOperation().getBodyRegion());
+      top.setInsertionPointToStart(getOperation().getBody());
+      std::string name = "__chipyard_arc_sampling_identity";
+      while (getOperation().lookupSymbol(name))
+        name += "_";
+      auto byte = top.getIntegerType(8);
+      samplingMarker =
+          func::FuncOp::create(top, regions.front().getLoc(), name,
+                               top.getFunctionType({byte}, {byte}));
+      samplingMarker.setPrivate();
+      samplingMarker->setAttr("chipyard.native_sampling_identity",
+                              top.getUnitAttr());
+      SmallVector<Attribute> markers;
+      if (auto previous = getOperation()->getAttrOfType<ArrayAttr>(
+              "chipyard.native_sampling_markers"))
+        llvm::append_range(markers, previous);
+      markers.push_back(
+          FlatSymbolRefAttr::get(samplingMarker.getSymNameAttr()));
+      getOperation()->setAttr("chipyard.native_sampling_markers",
+                              top.getArrayAttr(markers));
+    }
     for (auto region : regions) {
       llvm::SetVector<Value> inputs;
       getUsedValuesDefinedAbove(region.getBody(), inputs);
@@ -368,6 +401,13 @@ struct SensitizeDPI : PassWrapper<SensitizeDPI, OperationPass<ModuleOp>> {
         initial.push_back(zero(builder, loc, type));
       cf::BranchOp::create(builder, loc, check, initial);
       builder.setInsertionPointToEnd(check);
+      if (samplingMarker) {
+        auto marker = func::CallOp::create(builder, loc, samplingMarker,
+                                           ValueRange{sampling});
+        auto zero = hw::ConstantOp::create(builder, loc, APInt(8, 0));
+        isSampling = comb::ICmpOp::create(builder, loc, comb::ICmpPredicate::ne,
+                                          marker.getResult(0), zero);
+      }
       cf::CondBranchOp::create(builder, loc, isSampling, frozen, entry);
       builder.setInsertionPointToEnd(frozen);
       llhd::WaitOp::create(builder, loc, check->getArguments(), Value{},
@@ -610,8 +650,8 @@ struct NativeDPIABI : PassWrapper<NativeDPIABI, OperationPass<ModuleOp>> {
     unsigned width = nativeString || nativeHandle ? 64
                      : widthAttr                  ? widthAttr.getInt()
                      : (kind == "real" || kind == "realtime") ? 64
-                     : kind == "shortreal"        ? 32
-                                                  : 0;
+                     : kind == "shortreal"                    ? 32
+                                                              : 0;
     if (!width || formal.dir == sim::DPIDirection::Ref)
       return function.emitError(
                  "unsupported native DPI formal representation: ")
@@ -1842,7 +1882,7 @@ struct OutlineModel : PassWrapper<OutlineModel, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(OutlineModel)
   OutlineModel() = default;
   OutlineModel(const OutlineModel &other) : PassWrapper(other) {}
-  Option<unsigned> maxOps{*this, "max-ops", llvm::cl::init(4096)};
+  Option<unsigned> maxOps{*this, "max-ops", llvm::cl::init(16384)};
   Option<unsigned> maxPorts{*this, "max-ports", llvm::cl::init(16384)};
   StringRef getArgument() const override { return "chipyard-outline-model"; }
   StringRef getDescription() const override {
@@ -2256,6 +2296,31 @@ struct ExportModelInfo : PassWrapper<ExportModelInfo, OperationPass<ModuleOp>> {
               .getValue();
       (*object)["hasTimeReaders"] =
           model->getAttrOfType<BoolAttr>("chipyard.time_readers").getValue();
+      if (auto names =
+              model->getAttrOfType<ArrayAttr>("chipyard.write_only_outputs")) {
+        llvm::json::Array outputs;
+        for (Attribute name : names)
+          outputs.push_back(cast<StringAttr>(name).getValue());
+        (*object)["convergenceOutputs"] =
+            llvm::json::Object{{"version", 1}, {"names", std::move(outputs)}};
+      }
+      if (auto fn = model->getAttrOfType<FlatSymbolRefAttr>(
+              "chipyard.idle_clock_fn")) {
+        llvm::json::Array inputs;
+        for (Attribute name :
+             model->getAttrOfType<ArrayAttr>("chipyard.idle_clock_inputs"))
+          inputs.push_back(cast<StringAttr>(name).getValue());
+        llvm::json::Object proof{{"version", 1},
+                                 {"function", fn.getValue()},
+                                 {"inputs", std::move(inputs)}};
+        if (auto stable = model->getAttrOfType<FlatSymbolRefAttr>(
+                "chipyard.stable_combinational_fn"))
+          proof["stableFunction"] = stable.getValue();
+        if (auto evaluator = model->getAttrOfType<FlatSymbolRefAttr>(
+                "chipyard.stable_eval_fn"))
+          proof["stableEvaluator"] = evaluator.getValue();
+        (*object)["idleClock"] = std::move(proof);
+      }
       if (auto controls = getOperation()->getAttrOfType<DictionaryAttr>(
               "chipyard.sampling_inputs"))
         if (auto name = controls.getAs<StringAttr>(model.getSymName()))

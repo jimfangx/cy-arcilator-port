@@ -1,0 +1,2 @@
+SCOPE unit=[$unit.unit_note] n=8
+SCOPE result=11 caller=[UnitTop.boot]

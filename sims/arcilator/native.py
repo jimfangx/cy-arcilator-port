@@ -89,6 +89,46 @@ def generate(layout_path, partition_path, output, filelist=None):
         s['name']: s
         for s in model['states'] if s['type'] in ('input', 'output')
     }
+    convergence = model.get('convergenceOutputs')
+    certified = []
+    seen_certificates = set()
+    if convergence is not None:
+        if (not isinstance(convergence, dict)
+                or type(convergence.get('version')) is not int
+                or convergence['version'] != 1
+                or not isinstance(convergence.get('names'), list)):
+            raise ValueError('invalid native convergence certificate')
+        for name in convergence['names']:
+            if (not isinstance(name, str) or name in seen_certificates
+                    or name not in states or states[name]['type'] != 'output'):
+                raise ValueError('invalid certified native output')
+            seen_certificates.add(name)
+            certified.append(name)
+    idle = model.get('idleClock')
+    if idle is not None:
+        phase_names = [clock['held'] for clock in part['phase_clocks']]
+        if (not isinstance(idle, dict) or type(idle.get('version')) is not int
+                or idle['version'] != 1
+                or not isinstance(idle.get('function'), str) or
+                not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', idle['function'])
+                or idle['function'] != 'ArcModel_idle_clock'
+                or not isinstance(idle.get('inputs'), list)
+                or not idle['inputs'] or any(not isinstance(name, str)
+                                             for name in idle['inputs'])
+                or len(set(idle['inputs'])) != len(idle['inputs'])
+                or sorted(idle['inputs']) != sorted(phase_names)
+                or model.get('samplingInput') or model.get('hasTimeReaders')
+                or any(name not in states or states[name]['type'] != 'input'
+                       or states[name]['numBits'] != 1
+                       for name in idle['inputs'])):
+            raise ValueError('invalid native idle-clock certificate')
+        if ('stableFunction' in idle
+                and idle['stableFunction'] != 'ArcModel_stable_combinational'):
+            raise ValueError('invalid native stable-state certificate')
+        if ('stableEvaluator' in idle
+                and (idle['stableEvaluator'] != 'ArcModel_stable_eval'
+                     or not idle.get('stableFunction'))):
+            raise ValueError('invalid native stable-evaluator certificate')
     lines = [
         '// Generated native model bindings; no Verilator runtime or headers.',
         '#include "native/runtime.h"', '#include <cstdio>', 'extern "C" {',
@@ -105,6 +145,12 @@ def generate(layout_path, partition_path, output, filelist=None):
         lines.append(f'void {time_setter}(void *, uint64_t);')
     if wakeup_getter:
         lines.append(f'uint64_t {wakeup_getter}(void *);')
+    if idle is not None:
+        lines.append('uint32_t ' + idle['function'] + '(void *);')
+        if idle.get('stableFunction'):
+            lines.append('uint32_t ' + idle['stableFunction'] + '(void *);')
+        if idle.get('stableEvaluator'):
+            lines.append('void ' + idle['stableEvaluator'] + '(void *);')
     lines += ['}'] + export_code
     lines += [
         'struct SignalSpec { const char *name; unsigned offset, bits; bool output; };',
@@ -213,15 +259,19 @@ def generate(layout_path, partition_path, output, filelist=None):
         '  auto owner = std::make_unique<Runtime>(argc, argv, arcRuntimeModel_ArcModel, ArcModel_eval, '
         + (initial or 'nullptr') + ', ' + (final or 'nullptr') + ', ' +
         (time_setter or 'nullptr') + ', ' + (wakeup_getter or 'nullptr') +
-        ', ' + ('true' if model.get('hasTimeReaders') or any(i['module'] == 'ArcDelay' for i in instances) else 'false') + ', ' +
-        json.dumps(part['top']) + ');', '  auto &runtime = *owner;',
+        ', ' + ('true' if model.get('hasTimeReaders') or any(
+            i['module'] == 'ArcDelay' for i in instances) else 'false') +
+        ', ' + json.dumps(part['top']) + ');', '  auto &runtime = *owner;',
         '  runtime.set_root_clock_used(' +
         ('true' if part.get('root_clock_used', True) else 'false') + ');',
         '  for (auto &s : signal_specs) runtime.add_signal(s.name, s.offset, s.bits, s.output);',
         *([
             '  runtime.add_sampling_signal(' +
             json.dumps(model['samplingInput']) + ');'
-        ] if model.get('samplingInput') else []),
+        ] if model.get('samplingInput') else []), *[
+            '  runtime.add_write_only_output(' + json.dumps(name) + ');'
+            for name in certified
+        ],
         '  for (auto &s : trace_specs) runtime.add_trace_signal(s.name, s.offset, s.bits);',
         f'  for (unsigned i = 0; i < {len(analog_names)}; ++i) runtime.add_analog_signal(analog_specs[i].name, analog_specs[i].bits);',
         f'  for (unsigned i = 0; i < {len(part["phase_clocks"])}; ++i) runtime.add_clock(clock_specs[i].held, clock_specs[i].observed);',
@@ -233,7 +283,14 @@ def generate(layout_path, partition_path, output, filelist=None):
         '    }', '    for (unsigned i = 0; i < inst.parameter_count; ++i) {',
         '      auto &p = parameter_specs[inst.parameter_start + i]; binding->parameters.emplace(p.name, p.value);',
         '    }', '    runtime.add_binding(std::move(binding));', '  }',
-        *export_registration, '  return owner;', '}',
+        *export_registration, *([
+            '  runtime.add_idle_clock_model(' + idle['function'] + ', {' +
+            ', '.join(json.dumps(name) for name in idle['inputs']) + '}' +
+            (', ' +
+             idle['stableFunction'] if idle.get('stableFunction') else '') +
+            (', ' + idle['stableEvaluator']
+             if idle.get('stableEvaluator') else '') + ');'
+        ] if idle is not None else []), '  return owner;', '}',
         '#ifndef ARC_NATIVE_NO_MAIN', 'int main(int argc, char **argv) {',
         '  try {',
         '    auto runtime = chipyard_arc::create_model(argc, argv); return runtime->run();',

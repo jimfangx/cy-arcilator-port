@@ -1,0 +1,10 @@
+SCOPE relative=[RelativeTop.first.own.note] n=3
+SCOPE relative_task=[RelativeTop.first.own.show] n=10
+SCOPE relative=[RelativeTop.first.own.note] n=9
+SCOPE relative_task=[RelativeTop.first.own.show] n=16
+SCOPE relative_values=10,16 caller=[RelativeTop.first.boot]
+SCOPE relative=[RelativeTop.second.own.note] n=3
+SCOPE relative_task=[RelativeTop.second.own.show] n=10
+SCOPE relative=[RelativeTop.first.own.note] n=9
+SCOPE relative_task=[RelativeTop.first.own.show] n=16
+SCOPE relative_values=10,16 caller=[RelativeTop.second.boot]

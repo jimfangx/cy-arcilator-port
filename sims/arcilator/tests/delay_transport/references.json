@@ -1,0 +1,24 @@
+{
+  "status": "recorded",
+  "samples": 12001,
+  "maximum_fs": 12000,
+  "source_sha256": "92f782baa460510130c401647bf8f1261fe0cde963f5a7c89174d0db8f77a204",
+  "reference_design_sha256": "bfd178e824314c658051d84540aa231db6118fd6be7ea39a173b2f490b294d7a",
+  "stimulus_sha256": "31f78c6502fd0020ff6c4998862db2e4d1c667c8f1bc0e28a2b30fe496f270f0",
+  "raw_reference_sha256": "fb7aa4912b36009bce7510ebcd2cc1d8b5c9e72c6519adb6f1d43042d873ff4f",
+  "reference_sha256": "732413f731585ef32704e00f6d99ceb463fafedcd1c8e0cf0017fd57bd576b43",
+  "compiler_sha256": "a6071e4b4a68feafca0c8ee0e6aa275eee9a43a108c62801cfd1eca6eab6d8a3",
+  "runtime_sha256": "a10bd7d4a0850308ac8c2c98115b6a3084f9be978307610f2a521190c28f4023",
+  "compile_command": [
+    "/tmp/arcilator-pure-scope82/oracle/usr/bin/iverilog",
+    "-B/tmp/arcilator-pure-scope82/oracle/usr/lib/x86_64-linux-gnu/ivl",
+    "-g2012",
+    "-s",
+    "Ref",
+    "-o",
+    "/home/ubuntu/chipyard/sims/arcilator/output/development/native-delayed-signals114-20261020T130329Z/work/transport-fixture/reference.vvp",
+    "/home/ubuntu/chipyard/sims/arcilator/output/development/native-delayed-signals114-20261020T130329Z/work/transport-fixture/reference-design.sv",
+    "/home/ubuntu/chipyard/sims/arcilator/output/development/native-delayed-signals114-20261020T130329Z/work/transport-fixture/reference.sv"
+  ],
+  "scope": "Direct LLHD propagation-delay semantics checked against independent stockSV delayed NBA event queues. Original vector/chain timings plus100fs short clock pulse below750fs delay; all pulses must survive. Dense/coarse advance and recreation check all original12001 samples."
+}

@@ -94,6 +94,13 @@ if __name__ == "__main__":
           elif name in model_submodules:
             otsc.write(l)
           else:
-            assert False, "Unable to find smem CONF module in MFC(FIRTOOL) emitted JSON files."
+            # firtool can remove an unused memory instance after emitting its
+            # macro description (for example an unconsumed debug read port).
+            # Keep the definition available to the complete simulation library;
+            # hierarchy membership determines ownership, not whether to emit it.
+            library = odsc if dut_root else otsc
+            library.write(l)
+            print(f"Retaining unreferenced memory definition {name} in "
+                  f"{'DUT' if dut_root else 'model'} memory library", file=sys.stderr)
         else:
             exit(0)

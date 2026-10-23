@@ -2,6 +2,7 @@
 """Compile Arc with late array normalization and bounded model procedures."""
 import argparse
 import json
+import re
 from pathlib import Path
 import subprocess
 
@@ -17,6 +18,7 @@ def boolean(value):
 
 
 def compile_model(args):
+    late_wide = getattr(args, 'late_wide_arithmetic', True)
     flags = args.flags[1:] if args.flags[:1] == ['--'] else args.flags
     # Arcilator validates the complete option list. Mirror options whose
     # effects belong to the stages resumed below, including explicit false.
@@ -47,6 +49,15 @@ def compile_model(args):
     library = plugin(args.circt_opt, args.cxx, args.cache,
                      Path(__file__).with_name('Model.cpp'))
     load = '--load-pass-plugin=' + str(library)
+    convergence = plugin(args.circt_opt, args.cxx, args.cache,
+                         Path(__file__).with_name('Convergence.cpp'))
+    load_convergence = '--load-pass-plugin=' + str(convergence)
+    sampling = plugin(args.circt_opt, args.cxx, args.cache,
+                      Path(__file__).with_name('SamplingFreeze.cpp'))
+    load_sampling = '--load-pass-plugin=' + str(sampling)
+    idle = plugin(args.circt_opt, args.cxx, args.cache,
+                  Path(__file__).with_name('IdleClock.cpp'))
+    load_idle = '--load-pass-plugin=' + str(idle)
     arrays = plugin(args.circt_opt, args.cxx, args.cache,
                     Path(__file__).with_name('LowerArrays.cpp'))
     load_arrays = '--load-pass-plugin=' + str(arrays)
@@ -71,14 +82,20 @@ def compile_model(args):
     rounding = plugin(args.circt_opt, args.cxx, args.cache,
                       Path(__file__).with_name('FloatMath.cpp'))
     load_rounding = '--load-pass-plugin=' + str(rounding)
+    wide_load = []
+    if late_wide:
+        wide = plugin(args.circt_opt, args.cxx, args.cache,
+                      Path(__file__).with_name('WideArithmetic.cpp'))
+        wide_load = ['--load-pass-plugin=' + str(wide)]
 
     def run(*command):
         subprocess.run([str(value) for value in command], check=True)
 
     def transform(source, target, pipeline):
-        run(args.circt_opt, work / source, load, load_arrays, load_properties,
-            load_i0, load_compact, load_plusargs, load_formats, load_arc_llvm,
-            '--pass-pipeline=builtin.module(' + pipeline + ')',
+        run(args.circt_opt, work / source, load, load_convergence,
+            load_sampling, load_idle, load_arrays, load_properties, load_i0,
+            load_compact, load_plusargs, load_formats, load_arc_llvm,
+            *wide_load, '--pass-pipeline=builtin.module(' + pipeline + ')',
             '--emit-bytecode', '-o', work / target)
 
     # The stock state-allocation pipeline removes singleton arrays without
@@ -95,8 +112,12 @@ def compile_model(args):
     # SDK then initializes their pointer buffers using its inout copy-in path;
     # real inouts and refs retain their original inputs and the C ABI is unchanged.
     run(
-        args.circt_opt, args.input, load, load_rounding,
-        '--pass-pipeline=builtin.module(chipyard-lower-real-rounding,chipyard-sensitize-dpi,chipyard-native-dpi-abi,chipyard-coalesce-dpi,chipyard-seed-dpi-outputs)',
+        args.circt_opt, args.input, load, load_convergence, load_rounding,
+        *wide_load, '--pass-pipeline=builtin.module(' +
+        ('chipyard-restore-wide-arithmetic,' if late_wide else '') +
+        'chipyard-lower-real-rounding,chipyard-sensitize-dpi{freeze-sampling='
+        + str(args.freeze_sampling).lower() +
+        '},chipyard-record-output-effects,chipyard-native-dpi-abi,chipyard-coalesce-dpi,chipyard-seed-dpi-outputs)',
         '--emit-bytecode', '-o', work / 'imports.mlirbc')
     run(args.arcilator, work / 'imports.mlirbc', *flags,
         '--until-after=arc-conv', '--emit-mlir', '-o',
@@ -112,8 +133,10 @@ def compile_model(args):
     ]
     if lower.lookup_tables:
         optimize.append('arc-make-tables')
-    optimize += ['cse', 'arc-canonicalizer',
-                 'chipyard-record-time-dependencies', 'arc-lower-state']
+    optimize += [
+        'cse', 'arc-canonicalizer', 'chipyard-record-time-dependencies',
+        'arc-lower-state', 'chipyard-freeze-combinational-dpi'
+    ]
     if lower.inline:
         optimize.append('arc-inline')
     optimize += [
@@ -130,6 +153,29 @@ def compile_model(args):
     if lower.split_funcs_threshold is not None:
         pipeline += ',arc-split-funcs{split-bound=' + str(
             lower.split_funcs_threshold) + '}'
+    observe = trace or lower.trace_taps or lower.extra_runtime_args or any(
+        'observe' in flag for flag in flags)
+    pipeline += ',chipyard-certify-write-only-outputs{enabled=' + str(
+        args.output_convergence and not observe).lower() + '}'
+    held = []
+    if args.partition is not None:
+        part = json.loads(args.partition.read_text())
+        phases = part.get('phase_clocks') if isinstance(part, dict) else None
+        if (not isinstance(phases, list) or any(
+                not isinstance(clock, dict)
+                or not isinstance(clock.get('held'), str)
+                or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', clock['held'])
+                for clock in phases)):
+            raise ValueError('invalid native phase-clock input contract')
+        held = [clock['held'] for clock in phases]
+        if len(set(held)) != len(held):
+            raise ValueError('duplicate native phase-clock input')
+    if held:
+        pipeline += ',chipyard-certify-idle-clock{enabled=' + str(
+            args.idle_clocks
+            and not observe).lower() + ' stable-evaluator=' + str(
+                getattr(args, 'stable_evaluator',
+                        True)).lower() + ' held-inputs=' + ':'.join(held) + '}'
     pipeline += (
         ',cse,arc-canonicalizer,chipyard-export-model-info{output-file=' +
         json.dumps(str(args.state_file.resolve())) + '}')
@@ -145,9 +191,12 @@ def compile_model(args):
         pipeline.append('arc-insert-runtime{extra-args=' + json.dumps(extra) +
                         ' trace-file=' + json.dumps(trace) + '}')
     pipeline += [
-        'chipyard-lower-arrays', 'chipyard-lower-format-strings', 'chipyard-lower-real-formats',
-        'chipyard-lower-native-files', 'chipyard-native-plusargs', 'canonicalize'
+        'chipyard-lower-arrays', 'chipyard-lower-format-strings',
+        'chipyard-lower-real-formats', 'chipyard-lower-native-files',
+        'chipyard-native-plusargs', 'canonicalize'
     ]
+    if late_wide:
+        pipeline.append('chipyard-lower-wide-arithmetic')
     transform('allocated.mlirbc', 'arrays.mlirbc', ','.join(pipeline))
     source = 'arrays.mlirbc'
     if args.max_ops:
@@ -177,8 +226,23 @@ def main():
                  'mlir-translate', 'cache'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--cxx', default='c++')
-    parser.add_argument('--max-ops', type=int, default=4096)
+    parser.add_argument('--max-ops', type=int, default=16384)
     parser.add_argument('--max-ports', type=int, default=16384)
+    parser.add_argument('--freeze-sampling',
+                        type=boolean,
+                        default=True,
+                        help='skip phase-only combinational DPI cache updates')
+    parser.add_argument('--output-convergence', type=boolean, default=True)
+    parser.add_argument('--idle-clocks', type=boolean, default=True)
+    parser.add_argument('--stable-evaluator', type=boolean, default=True)
+    parser.add_argument(
+        '--late-wide-arithmetic',
+        type=boolean,
+        default=True,
+        help='retain proven-pure wide arithmetic through Arc optimization')
+    parser.add_argument('--partition',
+                        type=Path,
+                        help='native phase-clock input contract')
     parser.add_argument('flags', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.max_ops < 0 or not 0 < args.max_ports < 32768:

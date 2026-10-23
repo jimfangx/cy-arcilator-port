@@ -102,9 +102,18 @@ struct BoundedBlocks : RequiredPassInfoMixin<BoundedBlocks> {
       if (!bits.isScalable())
         result += (bits.getFixedValue() + 63) / 64;
     };
-    add(op.getType());
-    for (auto &value : op.operands())
-      add(value->getType());
+    // Aggregate insert/extract instructions select SSA components; they do
+    // not copy the entire container at each update. Charge the selected
+    // payload while retaining full costs for actual aggregate loads/stores.
+    if (auto *insert = dyn_cast<InsertValueInst>(&op))
+      add(insert->getInsertedValueOperand()->getType());
+    else if (isa<ExtractValueInst>(op))
+      add(op.getType());
+    else {
+      add(op.getType());
+      for (auto &value : op.operands())
+        add(value->getType());
+    }
     return unsigned(std::min<uint64_t>(result, 65536));
   }
   PreservedAnalyses run(Module &module, ModuleAnalysisManager &) {

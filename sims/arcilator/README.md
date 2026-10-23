@@ -8,6 +8,105 @@ preprocessed source, contains its own `VERILATOR` compatibility guards. Native
 model bindings call the original selected C/C++ device
 drivers through the DPI interfaces those drivers already expose.
 
+## Native callback schedules
+
+The runtime builds ordered lists for combinational, sampling and timed binding
+callbacks. An explicit contract owned by the exact constructed C++ type lets it
+omit inherited base no-ops and timer polls that always return `never`. Base
+commits still run whenever writes or internal changes are pending. Overridden
+callbacks retain their order and DPI scope. Unannotated types, inherited
+contracts and erased factories retain all callbacks. Use
+`+arc-no-callback-schedule` to disable this optimization.
+
+Built-in bindings declare their reviewed contracts through
+`native_callback_contract()` and use `make_binding_instance<T>`. A contract is
+an assertion that member lookup exposes the final virtual overriders; review
+callback `using` declarations and inheritance before adding one. Subclasses
+must declare their own contract to opt in. This avoids treating hidden base
+member names as proof that a virtual override is absent.
+
+Native325 qualifies the schedules on the existing full RocketConfig and
+ShuttleConfig models, using the original Dhrystone500 and Towers7 programs,
+selected DPI drivers and DRAMSim2. Two balanced runs per variant/program on
+CPU 15 with seed 1, an 8 MiB stack and no preload measured the following median
+CPU times against maintained native322:
+
+| Configuration | Program | Native322 | Callback schedules | CPU reduction |
+| --- | --- | ---: | ---: | ---: |
+| RocketConfig | Dhrystone500 | 17.738 s | 15.219 s | 14.2% |
+| RocketConfig | Towers7 | 1.338 s | 1.169 s | 12.6% |
+| ShuttleConfig | Dhrystone500 | 15.548 s | 12.808 s | 17.6% |
+| ShuttleConfig | Towers7 | 1.354 s | 1.136 s | 16.1% |
+
+Dhrystone measurements come from the byte-identical native324 executables;
+native325 corrects the generic contract and independently passes inheritance
+counterexamples. All sixteen workload logs, guest counters and root cycles
+match the original results. Separate checks match every final Dhrystone state
+byte, model/SDK counts, lifecycle events and six decoded Shuttle results.
+Standalone tests compare complete callback sequences, DPI scopes, picosecond
+and femtosecond timers, pending commits, late bindings, state bytes and cached
+signal addresses with scheduling disabled. Native326 rebuilds the maintained
+runtime and factory objects against the new headers before inheriting those
+results. The full and stable hardware model objects remain unchanged.
+
+These measurements cover these models and programs on this host. General VPI
+and all-config qualification remain incomplete. Commands, hashes, logs and
+state evidence are in
+`output/development/native-declared-callbacks325-20261023T011052Z/`.
+
+## Compiler-certified stable evaluation
+
+`ARC_STABLE_EVALUATOR=1` enables a second native evaluator for models that pass
+this backend's existing idle-clock, storage-alias, effect and observation proofs.
+When clock histories equal their held inputs, all certified clocked regions are
+inactive. The compiler copies every unconditional operation and store into a
+separate function; ordinary dead-code elimination removes calculations used
+only by the inactive regions. Outputs are still recomputed. The original full
+model entry remains available to the SDK and native runtime.
+
+The native runtime selects the smaller evaluator after its SDK evaluation hook
+and a fresh stability query. Sequential sampling, unsafe bindings, exported
+callbacks, observations and invalidated clock contracts retain full evaluation.
+The required whole-state `idle_next` comparison and current/staged storage stay
+in place, preserving cached `Signal` addresses. Use
+`ARC_STABLE_EVALUATOR=0` to omit the extra function, or
+`+arc-no-stable-evaluator` to retain the full evaluator at runtime. The compiler
+flag participates in normal and debug model-build settings.
+
+Native321 qualifies this path on the existing complete RocketConfig and
+ShuttleConfig models with the original Dhrystone500 and Towers7 programs, RTL,
+DPI drivers, DRAMSim2, clock/reset behavior and diagnostics. Two balanced runs
+per variant/program on CPU 15, seed 1, the normal 8 MiB stack and no preload
+measured these median CPU times against maintained native313:
+
+| Configuration | Program | Native313 | Stable evaluator | CPU reduction |
+| --- | --- | ---: | ---: | ---: |
+| RocketConfig | Dhrystone500 | 20.663 s | 17.826 s | 13.7% |
+| RocketConfig | Towers7 | 1.599 s | 1.353 s | 15.4% |
+| ShuttleConfig | Dhrystone500 | 17.707 s | 14.547 s | 17.8% |
+| ShuttleConfig | Towers7 | 1.537 s | 1.271 s | 17.3% |
+
+All sixteen uninstrumented runs match the original complete logs, guest
+counters and root cycles. Separate diagnostics match every final Dhrystone
+state byte, the original SDK hook and lifecycle counts, and all six independently
+decoded Shuttle dirty-L1 results. Full plus stable kernel calls equal the
+original full-kernel count. Original selected driver objects are byte-for-byte
+unchanged; feature-off compilation reproduces the previous normalized LLVM.
+Standalone tests cover opt-outs, callback feedback, unreported commits, dirty
+clock bytes, post-SDK query invalidation, state bytes, waveforms and pointer
+stability. Compiler tests compare declared output bits and all other state
+bytes at O0/O3, including partial-width register payloads.
+Partial-width evaluations use valid input/register padding and check complete
+output bytes against an independent expected value. Deliberately dirty payload
+padding is exercised only by read-only queries. This follows the pinned LLVM
+load contract; newer unpinned LLVM documentation may describe different rules.
+
+These results cover the named models, programs and host controls. They do not
+establish all-config runtime performance or a new Verilator comparison; general
+VPI and all-config qualification remain incomplete. Commands, hashes, timings
+and full-state evidence are in
+`output/development/native-runtime-stable321-20261022T233015Z/`.
+
 ```sh
 source env.sh
 cd sims/arcilator
@@ -61,10 +160,913 @@ overrides the CIRCT runtime link libraries. Native artifacts live in
 `generated-src/<model>.<config>/arcilator-native`, with observed compiler state
 in `arcilator-native-debug`. Compiler outputs are renamed into place only after
 successful compilation.
+`ARC_BUILD_JOBS` defaults to the available CPU count and controls LLVM machine
+code generation, host C/C++ compilation, and the patched Verilog frontend build.
+Set it explicitly to limit concurrency when memory is constrained. LLVM keeps
+whole-model optimization, then balances independent functions across compiler
+processes and combines their objects. `ARC_BUILD_JOBS=1` uses the original serial
+pipeline. `codegen-report.json` records stage timings and partition costs; a
+single dominant function can limit parallelism. Parallel builds retain the
+whole optimized module in `model.bc` and add instruction-selection boundaries
+separately in each partition. Module or inline assembly and
+non-ELF targets use one code generator. This setting does not parallelize the
+simulation evaluator.
+`ARC_ABI_BUFFERS` defaults to 1 and controls the private large-argument and
+large-result rewrites before and after LLVM optimization. Set it to 0 to
+retain those private LLVM ABIs; the original external DPI interfaces and native
+wide-arithmetic ABI adapter are unchanged. This option is independent of
+`ARC_SHARED_PROCEDURES`.
+
+`ARC_EARLY_INLINE` defaults to 1 and runs standard LLVM inlining before the
+arithmetic ABI is fixed, exposing small forwarded values to native lowering.
+Set it to 0 to retain the previous order; the setting is tracked in the model
+cache. The compiler CLI provides the matching `--no-early-inline` switch.
+
+`ARC_CODEGEN_PIPELINE` defaults to `bounded`. Selecting `stock` uses the stock
+LLVM optimization pipeline and one `llc` process, retaining ABI buffering when
+`ARC_ABI_BUFFERS=1`. It omits aggregate-store materialization, vector guards,
+instruction-selection boundaries and parallel model partitioning. The requested
+`ARC_BUILD_JOBS` still controls host and frontend compilation; the codegen report
+records both requested and actual jobs. Both options participate in build cache
+invalidation.
+
+`ARC_LATE_WIDE_ARITHMETIC` defaults to 1. Proven-pure generated wide shifts
+remain typed CIRCT arithmetic through Arc optimization, and surviving shifts
+above 1,024 bits become typed native helper calls afterward. The restoration and
+DPI sensitivity passes share one strict external-function/type/provenance check;
+ordinary, enabled, clocked or mismatched calls retain their existing handling.
+Set `ARC_LATE_WIDE_ARITHMETIC=0` (or `compiler/model.py
+--late-wide-arithmetic=false`) to retain the earlier arithmetic boundary. This
+option participates in model cache invalidation. Native device-driver ABIs and
+runtime scheduling are unchanged.
+
+The minimal native-compatible compiler control uses:
+
+```sh
+make native CONFIG=RocketConfig ARC_MODEL_OPS=0 ARC_SHARED_PROCEDURES=0 \
+  ARC_ABI_BUFFERS=0 ARC_CODEGEN_PIPELINE=stock
+```
+
+Use the same overrides on subsequent run targets; changing them refreshes the
+cached model.
+
+This retains native correctness and compatibility lowering, model metadata,
+clock/reset/diagnostic behavior, original device drivers and certified runtime
+optimizations. The complete Rocket/Dhrystone control measured 45.27 s against
+73.91 s for the default in the same paired sequence, with identical retirement
+traces, six checked final globals and evaluation/helper/hook counts. This
+measurement covers Rocket; other configurations may need the default compiler
+scalability protections. Evidence is in
+`output/development/native-minimal-backend201-20261021T201519Z/findings.json`
+and `measurement.json` there.
+
+Native202 integrates these build controls. The default pipeline passes all 91
+native variants and the compiler/frontend, RTL-library and coverage-integrity
+gates. Eight O0/O3 mode checks cover 294,912 independent results, aliased
+buffers, delayed captures, effects, output bounds and failed-build preservation.
+The workspace Rocket builds for default, ABI-buffer-disabled and minimal modes
+match their qualified model objects, metadata and checked code/data sections;
+identical repeat builds leave artifacts untouched. Their complete original
+Towers logs match, as do default MegaBoomV3 and Shuttle builds. The workspace
+minimal Rocket executable also reproduces the full Dhrystone retirement trace
+and all six checked final globals. Rocket's default settings are restored after
+validation. Commands, hashes and actual-main results are in
+`output/development/native-compiler-controls202-20261021T201939Z/findings.json`,
+`promotion.json`, `normal-make-report.json` and `normal-program-validation.json`
+there. All-config runtime qualification remains incomplete.
+
 `ARC_OPT_LEVEL` selects LLVM IR optimization. Machine-code generation uses the
 same level by default; `ARC_LLC_OPT_LEVEL` overrides it independently. For large
 models, `ARC_OPT_LEVEL=1 ARC_LLC_OPT_LEVEL=0` keeps the IR optimizations while
 using LLVM's faster machine-code pipeline.
+`ARC_OPT_FLAGS` passes additional, shell-quoted arguments to LLVM `opt` and
+defaults to empty. Its value participates in codegen cache invalidation and
+appears as parsed arguments in `codegen-report.json`. Host target/CPU attributes
+emitted by `opt` survive serial and parallel machine-code generation.
+
+On the measured x86-64 host, this selects the build machine's instruction set:
+
+```sh
+make native CONFIG=RocketConfig ARC_MODEL_OPS=0 ARC_SHARED_PROCEDURES=0 \
+  ARC_ABI_BUFFERS=0 ARC_CODEGEN_PIPELINE=stock \
+  ARC_OPT_FLAGS='-mtriple=x86_64-unknown-linux-gnu -mcpu=native'
+```
+
+Use a compatible host CPU selection when moving the executable to another
+machine. Paired full Rocket/Dhrystone controls measured 47.27 s for the minimal
+baseline, 44.65 s with the host triple and 40.64 s with host-CPU selection.
+All retirement traces, six checked final values and evaluation/helper/hook
+counts match. This tuning changes the compiled model; original device-driver
+objects and runtime remain identical. Results cover this host and workload.
+Evidence is in
+`output/development/native-host-target203-20261021T205822Z/findings.json`
+and `measurement.json` there.
+
+For the existing packed-cache unit fixture, host targeting alone exhausted the
+2 GiB compiler admission limit in SLP vectorization. Adding
+`-vectorize-slp=false` to `ARC_OPT_FLAGS` passes all 1,536 cache images within
+the 2 GiB/45 s budget using stock LLVM. This unit result does not establish a
+full-workload speedup or justify dropping default scalability protections across
+configurations. The empty `ARC_OPT_FLAGS` default preserves the existing path.
+
+Native204 integrates this option after all 91 default native variants and the
+compiler/frontend, RTL-library and coverage-integrity gates pass. Focused target
+tests check 589,824 integer/ABI results, 65,536 floating-point cases and 1,536
+packed-cache images, including separate rounding, signed zero, subnormals,
+infinities and NaNs. Actual Makefile builds reproduce the qualified default,
+minimal, host-triple and host-CPU model objects and checked code/data sections.
+Flag-only changes preserve the model/glue stages; quoted arguments and identical
+repeat builds behave correctly. The workspace host-CPU Rocket binary reproduces
+the full Dhrystone retirement trace and all six checked globals. Complete
+original Towers logs match for tuned Rocket and default Rocket, MegaBoomV3 and
+Shuttle. Rocket's empty-flag default is restored after validation. Evidence is in
+`output/development/native-opt-flags204-20261021T211528Z/findings.json`,
+`promotion.json`, `normal-make-report.json` and `normal-program-validation.json`
+there. All-config runtime qualification remains incomplete.
+
+Native205 compares two existing upstream options independently with the same
+complete Rocket/Dhrystone host-tuned minimal pipeline. Two balanced,
+uninstrumented runs per control measured:
+
+| Existing compiler option | Median elapsed time |
+| --- | ---: |
+| Host-tuned minimal baseline | 40.77 s |
+| Arcilator lookup tables disabled | 40.02 s |
+| LLVM SLP vectorization disabled | 41.77 s |
+
+Every full retirement trace, six checked final values and evaluation/helper/hook
+count matches. Physical metadata remains identical; regenerated native glue and
+the original frozen runtime/device-driver objects retain the same interface.
+The small lookup-table improvement covers this workload. SLP disabling remains
+a scaling option for the packed-cache unit rather than a Rocket runtime gain.
+Defaults remain unchanged. The lookup-table control uses
+`ARCILATOR_FLAGS='--split-funcs-threshold=8192 --lookup-tables=false'` with the
+same minimal/host-tuning overrides; the SLP control appends
+`-vectorize-slp=false` to `ARC_OPT_FLAGS`. Full commands, hashes, exact counts
+and results are in
+`output/development/native-upstream-options205-20261021T214751Z/findings.json`
+and `measurement.json` there.
+
+Native206 checks the same host-tuned minimal controls on the original
+ShuttleConfig hardware with complete, unchanged Towers and Dhrystone programs.
+Two balanced, uninstrumented runs per engine on CPU 15 with seed 1 and the
+standard 8 MiB stack measured:
+
+| Engine/compiler control | Towers median | Dhrystone median |
+| --- | ---: | ---: |
+| Native default | 5.60 s | 64.19 s |
+| Host-tuned minimal, SLP enabled | 3.12 s | 35.55 s |
+| Host-tuned minimal, SLP disabled | 3.18 s | 36.56 s |
+| Matched Verilator reference | 1.87 s | 20.02 s |
+
+Every native run reproduces the complete original UART log, guest counters and
+root-cycle count. Separate diagnostics retain identical model-evaluation,
+idle-helper, stability-helper and SDK-hook counts. A read-only host wrapper
+also checks all six final Dhrystone results in valid matching L1 D-cache lines;
+each value resides in a dirty line, so this check does not use backing DRAM.
+Debug locations identify the existing cache allocations while requiring
+regenerated LLVM and metadata to match the original models. The actual model,
+runtime and original device-driver objects remain unchanged. All eight complete
+final tag/data memory images match across the three native controls. Corrupted
+results, invalid or duplicate tags, and truncated state fail the oracle checks.
+
+The tuned native builds remain slower than the matched Verilator reference.
+These results cover this host and the two named workloads; defaults remain
+unchanged and all-config runtime qualification remains incomplete. The existing
+host-tuning command above selects this optional path with `CONFIG=ShuttleConfig`;
+append `-vectorize-slp=false` to compare SLP disabling. This study establishes
+native numerical results; the historical Verilator six-value oracle gap is
+retained. Commands, hashes and results are in
+`output/development/native-shuttle-fast206-20261021T215958Z/findings.json`,
+`measurement.json`, `numerical-validation.json` and `cache-oracle-provenance.json`
+there.
+
+Native207 checks the same host-tuned minimal controls on the original
+MegaBoomV3Config hardware with complete, unchanged Towers and Dhrystone programs.
+Two balanced, uninstrumented runs per engine on CPU 15 with seed 1 and the
+standard 8 MiB stack measured:
+
+| Engine/compiler control | Towers median | Dhrystone median |
+| --- | ---: | ---: |
+| Native default | 11.08 s | 83.54 s |
+| Host-tuned minimal, SLP enabled | 6.52 s | 49.22 s |
+| Host-tuned minimal, SLP disabled | 6.47 s | 49.06 s |
+| Matched Verilator reference | 7.17 s | 54.14 s |
+
+Every native run reproduces the complete original UART log, guest counters and
+root-cycle count. Separate diagnostics retain identical model-evaluation,
+idle-helper, stability-helper and SDK-hook counts. A read-only host wrapper
+also checks all six final Dhrystone results in valid matching L1 D-cache lines;
+each value resides in a dirty line, so this check does not use backing DRAM.
+Debug locations identify the existing cache allocations while requiring
+regenerated LLVM and metadata to match the original models. The actual model,
+runtime and original device-driver objects remain unchanged. All eighteen
+complete final tag/data memory images match across the three native controls.
+Corrupted results, mismatched read copies, invalid or duplicate tags, and
+truncated state fail the oracle checks. Both metadata copies and all sixteen
+data arrays are checked.
+
+The Verilator reference retains its original compiler settings; the native
+controls use host-CPU selection. These are results for the two named programs.
+Stock LLVM codegen took 178 s and 165 s for SLP enabled/disabled, respectively,
+within this study's 4 GiB/180 s compiler admission. Prerequisite compiler caches
+were warm. These results cover this host and the two named workloads; defaults
+remain unchanged. All-config runtime qualification remains incomplete. The
+existing host-tuning command above selects this optional path with
+`CONFIG=MegaBoomV3Config`;
+append `-vectorize-slp=false` to compare SLP disabling. This study establishes
+native numerical results; the historical Verilator six-value oracle gap is
+retained. Commands, hashes and results are in
+`output/development/native-mega-fast207-20261021T221938Z/findings.json`,
+`measurement.json`, `numerical-validation.json` and `cache-oracle-provenance.json`
+there.
+
+Native209 caches the five port handles of each generated asynchronous-register
+bank at initialization. Each sample still reads the current values, detects the
+same rising clock/reset edges and stages its output in the same nonblocking
+queue. The captured byte vector moves into that queue instead of being copied
+again. Handles point to stable current-model storage; settling continues to copy
+state into that storage. All model evaluations, SDK hooks, foreign callbacks,
+clock/reset behavior and original device drivers remain intact.
+
+Two balanced runs per cell on CPU15, seed 1 and the default 8 MiB stack measured
+the existing complete original programs with the optional host-CPU compiler path:
+
+| Configuration | Program | Previous binding | Cached bank ports |
+| --- | --- | ---: | ---: |
+| RocketConfig | Towers | 3.11 s | 2.75 s |
+| RocketConfig | Dhrystone | 40.75 s | 36.32 s |
+| ShuttleConfig | Towers | 3.15 s | 2.84 s |
+| ShuttleConfig | Dhrystone | 35.91 s | 32.82 s |
+
+Every timing run matches the complete original log, guest counters and completion
+cycle count. Focused actual-main qualification also preserves Rocket's entire
+retirement trace, all six Dhrystone values and exact model/SDK evaluation counts.
+Shuttle preserves the entire final model-state image, six values read through
+valid dirty-cache tags and data, and exact evaluation counts. The 2051-bit integer,
+array and nested-structure async fixture adds 1,024 independently checked mixed
+clock/reset sequences alongside its existing asynchronous/synchronous cases.
+These are focused checks for this binding change; the preceding all-91-variant
+checkpoint is native204. Compiler defaults and the original Verilator reference
+settings remain unchanged, and Rocket/Shuttle are still slower than that reference.
+All-config runtime qualification remains incomplete. Evidence is in
+`output/development/native-runtime-profile209-20261021T231903Z/promotion.json`,
+`banks-measurement.json`, `banks-build.json` and `findings.json` there.
+
+Native210/211 tested two additional inlining controls on the same complete
+original Rocket/Shuttle Dhrystone programs with the native209 bank-cache binding.
+Lowering LLVM's `-inline-threshold=0` leaves more helper calls but shrinks each
+main evaluator by only about 1.5%. Two balanced runs per engine measured Rocket
+at 35.93 s baseline versus 39.09 s for the control, and Shuttle at 32.45 s versus
+34.38 s. The setting is slower on both measured programs.
+
+The earlier upstream Arc `--inline=false` option also preserves all listed signal
+layouts, but the native compiler can no longer prove the idle-clock certificate.
+The conservative runtime remains active. One complete Dhrystone screening pair
+measured Rocket at 36.18 s versus 51.50 s, and Shuttle at 32.73 s versus 44.60 s.
+All 12 complete program runs across these two studies match original logs, guest
+counters and completion cycles. Both controls were rejected; no compiler default,
+runtime, original driver or existing Verilator-reference setting changed. Slower
+controls did not trigger additional Towers or broad numerical/configuration
+qualification. These are measured controls for the named programs, not universal
+performance claims. Commands, hashes and exact scopes are in
+`output/development/native-inline-control210-20261021T234124Z/findings.json` and
+`output/development/native-arc-inline211-20261021T235108Z/findings.json`.
+
+Native212 kept native-only C++ link-time optimization private: paired full
+Dhrystone medians improved about 0.3% on Rocket and 1.8% on Shuttle, without a
+material gain that justified changing defaults. The LLVM model and original
+device-driver objects were unchanged. Its build/probe/measurement reports are in
+`output/development/native-cxx-lto212-20261021T235742Z/findings.json`.
+
+Native213 separates complete-word wide-shift loops from bounded partial-word
+copies, retaining both helper ABIs, high-amount checks, sign extension and padding
+masks. It also fills only bytes outside the overwritten result region. Generic
+O3 compiles the two interior loops into 16-byte SIMD with runtime alias checks;
+there are no new ISA flags, model, clock, reset, scheduling or driver changes.
+The original independent helper test passes 119,880 O0/O3 checks up to 65,537 bits;
+generated LLVM ABI tests pass 8,640 vectors, their protected-page checks and
+intentional truncation-fault controls. Additional private arithmetic/guard-page
+checks cover boundary words, unaligned payloads and read-only inputs.
+
+Two balanced complete-program runs per engine/cell, using the existing optional
+host-CPU LLVM path, CPU15, seed1 and the default 8 MiB stack measured:
+
+| Configuration | Program | Previous helper | Interior-word helper |
+| --- | --- | ---: | ---: |
+| RocketConfig | Towers | 2.72 s | 2.61 s |
+| RocketConfig | Dhrystone | 35.95 s | 34.41 s |
+| ShuttleConfig | Towers | 2.95 s | 2.73 s |
+| ShuttleConfig | Dhrystone | 32.65 s | 31.02 s |
+
+Every timing matches the full original log, guest counters and completion cycles.
+Shuttle's first Towers baseline was noisier than the other timing runs; the
+Dhrystone gains are about 4% on Rocket and 5% on Shuttle. Rebuilt actual-main
+binaries have the timed candidates' code/data sections. Rocket's entire original
+retirement trace and six globals match; Shuttle's entire final state and six
+dirty-cache values match. Exact model evaluations, SDK hooks and helper counts
+match in both cases. These are focused checks for this pure arithmetic change;
+the historical all-91-native checkpoint remains native204. Rocket/Shuttle remain
+slower than the existing original Verilator reference, and all-config runtime
+qualification remains incomplete. Commands and hashes are in
+`output/development/native-wide-interior213-20261022T001252Z/findings.json`,
+`measurement.json`, `focused-tests.json`, `guard-page.json` and `promotion.json`.
+
+Native214 reads one-byte scalar ports directly and masks their unused high bits.
+Zero-width reads still return zero without touching storage; reads above 64 bits
+still reject scalar access. Larger scalar reads use the previous implementation.
+The existing run-loop fixture now checks dirty one-bit clocks, other partial
+bytes, zero width, an unaligned nine-bit fallback and input immutability. Both
+baseline and candidate pass 129,664 independent integer/protected-page/error
+checks at O0/O3; all 18 complete waveform cases match for both headers and the
+rebuilt actual main. The physical-clock certificate's raw-byte guards remain intact.
+
+Fresh baseline/candidate C++ builds use identical source paths and generic O3
+flags. Fresh baseline code/data sections match the qualified native213 binaries,
+and rebuilt actual-main sections match the timed candidate. LLVM models and
+original device-driver objects remain byte-identical. Two paired full-program
+runs per engine/cell, CPU15, seed1 and the default 8 MiB stack measured:
+
+| Configuration | Program | Previous scalar read | Masked one-byte read |
+| --- | --- | ---: | ---: |
+| RocketConfig | Towers | 2.66 s | 2.57 s |
+| RocketConfig | Dhrystone | 34.96 s | 33.58 s |
+| ShuttleConfig | Towers | 2.77 s | 2.70 s |
+| ShuttleConfig | Dhrystone | 31.62 s | 31.00 s |
+
+All 16 timings match full original logs, guest counters and completion cycles.
+Actual-main Rocket preserves the entire retirement trace and all six Dhrystone
+results; Shuttle preserves its entire final model state and six valid dirty-cache
+results. Exact model, SDK-hook and helper counts match for both cores. Compiler
+settings, clocks/reset, diagnostics and original drivers remain unchanged. These
+are focused checks, not an all-native/configuration sweep; the historical 91-case
+checkpoint remains native204. Rocket/Shuttle remain slower than the original
+Verilator reference, and all-config qualification remains incomplete. Evidence is
+in `output/development/native-signal-byte214-20261022T003103Z/findings.json`,
+`measurement.json`, `signal-unit.json`, `fixture.json`,
+`baseline-equivalence.json` and `promotion.json` there.
+
+Native215–218 checked general model-codegen controls while retaining native214.
+An optimized-IR audit and 2,016 independent arithmetic checks showed that explicit
+vector forms gave the same instruction counts as scalar wide-bitwise forms in
+the isolated cases; the backend already uses SIMD. LLVM `select-optimize` and O2
+produced unchanged normalized optimized IR for both sampled models, so redundant
+codegen/firmware runs were skipped. Standard instruction sinking changed code but
+paired Dhrystone runs gained only about 1.7% on Rocket and were flat on Shuttle;
+all eight full logs, guest counters and cycles matched. No control was promoted.
+The controls apply uniformly to IR/compiler properties; named cores and programs
+identify validation cases, without design/workload-specific implementation rules.
+No clock/callback proof or conservative fallback was weakened. These limited
+controls do not establish all-config support or a universal performance result.
+Evidence is in `output/development/native-model-op-audit215-20261022T005413Z/findings.json`,
+`output/development/native-select-control216-20261022T010415Z/findings.json`,
+`output/development/native-ir-sink217-20261022T010454Z/findings.json` and
+`output/development/native-O2-control218-20261022T011455Z/findings.json`.
+
+Native219 tested constant-width/mode C++ wrappers for the existing pure shift
+helper, derived only from generated IR types. Both models passed independent
+helper/guard checks and eight complete Dhrystone timing runs matched original
+logs, counters and cycles. Balanced medians measured Rocket at 33.66 s baseline
+versus 34.10 s candidate, and Shuttle at 30.71 s versus 30.35 s. The control was
+rejected without changing defaults. Evidence is in
+`output/development/native-helper-specialize219-20261022T012329Z/findings.json`.
+
+Native220 passes a proven small unsigned value directly to a pure left-shift
+helper, avoiding a materialized wide input buffer. Only constants fitting 64 bits
+or direct zero extensions from at most 64 bits qualify, and the callee must have
+the existing generated arithmetic declaration. Full shift amounts retain the
+same low-word/high-word/partial-tail checks and output masks. Other expressions,
+right shifts, occupied wrapper names and ordinary DPI calls retain their existing
+paths. Both generic helper ABIs remain available. Selection depends on IR types
+and values, with no core, instance, signal or workload identity checks. Lowering
+streams the module and retains only qualifying zero extensions for each function.
+
+The new regression checks conservative fallbacks, large decimal constants,
+foreign-call preservation, symbol collisions, atomic ABI errors and idempotence.
+Independent tests pass 23,520 direct scalar-data vectors and 3,640 protected-page
+checks at O0/O3, plus 33,600 generated LLVM vectors across stock and bounded
+codegen at O0/O3. Existing generic-helper checks pass at O0/O3; existing generated
+wide-ABI checks retain their high-bit fault controls and boundary cases.
+
+Two balanced complete-program runs per engine/cell on CPU15, seed1 and the
+default 8 MiB stack, using the existing optional host-CPU compiler path, measured:
+
+| Configuration | Program | Previous arithmetic | Scalar-input shifts |
+| --- | --- | ---: | ---: |
+| RocketConfig | Towers | 2.58 s | 2.49 s |
+| RocketConfig | Dhrystone | 33.94 s | 32.43 s |
+| ShuttleConfig | Towers | 2.71 s | 2.62 s |
+| ShuttleConfig | Dhrystone | 30.89 s | 29.83 s |
+
+All 16 runs match full original logs, guest counters and completion cycles. The
+diagnostic candidate preserves Rocket's entire original retirement trace and
+six globals, Shuttle's entire final model state and six valid dirty-cache values,
+and exact model/helper/SDK-hook counts for both. Fresh actual-main lowering
+produces the exact timed LLVM inputs; freshly compiled helper/model objects and
+linked executables match the qualified candidate's loaded code/data sections.
+Original driver objects, physical layouts, clock/reset behavior, callbacks,
+diagnostics and compiler defaults remain unchanged. These are focused checks;
+the historical all-91-native checkpoint remains native204. Rocket/Shuttle still
+trail the original Verilator reference, and all-config/general-VPI qualification
+remains incomplete. Commands, hashes and scopes are in
+`output/development/native-scalar-shift220-20261022T013222Z/measurement.json`,
+`qualification.json`, `promotion.json`, `unit.json` and `findings.json` there.
+
+Native221 reprofiled the integrated native220 Rocket Dhrystone executable using
+33,670 self-samples with no unmapped samples and the entire original program log
+unchanged. The evaluator accounts for about 60% of samples; scalar-input and
+remaining generic shift helpers account for about 3.7% and 2.8%. This diagnostic
+profile is not a timing comparison. Evidence is in
+`output/development/native-main-profile221-20261022T015020Z/findings.json`.
+
+Native222 runs LLVM's standard CGSCC inliner before procedure-storage, private
+ABI and arithmetic lowering. Ordinary forwarding calls then expose their narrow
+zero-extended values to the existing native220 arithmetic contract. In the two
+sampled complete models, 86 additional left-shift sites qualify; all 324 left
+shifts use the scalar-input path. Selection follows normal LLVM inlining and IR
+types/values, without core, signal, instance or workload-specific analysis. No
+new arithmetic implementation, compiler dependency or native C++ change is needed.
+
+`ARC_EARLY_INLINE=1` enables the stage by default. `ARC_EARLY_INLINE=0`, or the
+compiler CLI's `--no-early-inline`, retains the previous lowering order. The flag
+is recorded in model settings so changes invalidate the model cache. Real Make
+checks accept 0/1, reject other values, and verify that repeating the same setting
+preserves its timestamp. With no `--llvm-opt`, standalone arithmetic lowering
+retains its existing tool-free behavior.
+
+Two balanced full-program runs per engine/cell on CPU15, seed1 and the default
+8 MiB stack, using the existing optional host-CPU compiler path, measured:
+
+| Configuration | Program | Native220 | Early LLVM inlining |
+| --- | --- | ---: | ---: |
+| RocketConfig | Towers | 2.59 s | 2.23 s |
+| RocketConfig | Dhrystone | 33.25 s | 29.49 s |
+| ShuttleConfig | Towers | 2.54 s | 2.35 s |
+| ShuttleConfig | Dhrystone | 29.52 s | 26.85 s |
+
+All 16 runs reproduce full original logs, guest counters and completion cycles.
+Independent diagnostics preserve Rocket's entire retirement trace and six globals,
+Shuttle's entire final state and six valid dirty-cache values, and exact model,
+helper and SDK-hook counts. Fresh actual-main default CLI output has the timed
+candidate's normalized LLVM; the disabled CLI output matches native220. Fresh
+model objects and linked executables match the qualified candidate's loaded
+code/data sections. All native C++, original drivers, physical metadata, clocks,
+reset, callbacks and diagnostics remain unchanged.
+
+The new forwarding fixture checks 33,600 independent integer vectors across the
+enabled/disabled paths and both codegen pipelines. Existing compiler-mode checks
+pass 294,912 integer/ABI results and 32,768 floating-point cases, including aliases,
+side effects, delayed captures and failure preservation. Existing shared-procedure
+checks pass 6,291,456 words, ABI/storage guards, CLI defaults/overrides and failed
+transaction preservation. These are targeted checks, not an all-native/config
+sweep; the historical 91-case checkpoint remains native204. Rocket/Shuttle still
+trail the original Verilator reference. All-config and general VPI work remains
+incomplete. Commands, hashes and exact scopes are in
+`output/development/native-early-inline222-20261022T015212Z/findings.json`,
+`probe.json`, `measurement.json`, `qualification.json` and `promotion.json` there.
+
+Native223 profiled the integrated native222 full Rocket Dhrystone program with
+30,953 self-samples, no unmapped samples and the original log unchanged. A
+read-only LLVM DemandedBits audit224 then found that all 84 remaining right-shift
+results observe at most four bits; 42 results are unused. The audit adds no
+production pass and does not specialize to those observed widths. It identified
+missing optimizer information at the generated arithmetic boundary.
+
+Native225 marks the generated integer-valued arithmetic wrappers `nounwind`,
+`willreturn` and `memory(none)`. Their bounded deterministic C++ implementation
+accesses private nonescaping scratch buffers and has no driver/SDK callbacks or
+stateful operations. LLVM permits local alloca reads/writes under
+[`memory(none)`](https://llvm.org/docs/LangRef.html#function-attributes).
+Pointer C ABI declarations retain their argument-memory effects; ordinary DPI
+contracts remain intact. Scalar-input wrappers inherit the same generated
+contract. No new arithmetic implementation, custom optimization pass, compiler
+dependency or runtime C++ change is needed.
+
+Stock LLVM optimization reduces scalar-helper call sites from 324 to 108 and
+general word-helper sites from 85 to 35 in each sampled model. These counts are
+static diagnostics. Two balanced complete-program runs per engine/cell on CPU15,
+seed1 and the default 8 MiB stack, using the existing optional host-CPU path,
+measured:
+
+| Configuration | Program | Native222 | Explicit arithmetic contract |
+| --- | --- | ---: | ---: |
+| RocketConfig | Towers | 2.32 s | 1.89 s |
+| RocketConfig | Dhrystone | 30.20 s | 24.70 s |
+| ShuttleConfig | Towers | 2.41 s | 1.94 s |
+| ShuttleConfig | Dhrystone | 27.65 s | 22.11 s |
+
+All 16 full logs, guest counters and completion cycles match. Independent
+qualification preserves Rocket's complete retirement trace and six globals,
+Shuttle's entire final model state and six valid dirty-cache values, and exact
+model/helper/SDK-hook counts. Fresh actual-main normalized LLVM and freshly
+compiled model/executable loaded sections match the qualified timed candidate.
+All native C++, original device-driver objects, physical metadata, clocks/reset,
+foreign callbacks, diagnostics and compiler tuning settings remain unchanged.
+
+The generated ABI fixture adds 432 independent unused-result cases covering full
+and scalar data, all shift modes, aliases, unsigned wraparound and a separate
+ordinary counter-writing call. The optimized code drops unused arithmetic and
+keeps that effect. Existing 8,640 full-ABI and 33,600 scalar-input LLVM vectors,
+O0/O3 protected-page checks and high-bit fault controls pass. Original CIRCT tests
+pass 10 pure-helper provenance guards and 25,344 compiled value/stable/sampling
+checks with legacy sensitivity controls. This is targeted qualification; the
+historical all-91-native checkpoint remains native204. Current results do not
+reproduce the magnitude reported in the upstream 2023 talk, and no cause for that
+gap is assumed from harness overhead alone. Existing original Verilator controls
+are retained, without new configurations/workloads or reference jobs. All-config
+and general VPI work remains incomplete. Evidence is in
+`output/development/native-pure-contract225-20261022T021745Z/findings.json`,
+`measurement.json`, `qualification.json`, `promotion.json` and `unit.json`.
+Profile/audit evidence is in
+`output/development/native-main-profile223-20261022T021244Z/findings.json` and
+`output/development/native-demand-audit224-20261022T021434Z/findings.json`.
+
+Native226 reprofiled native225 on the complete original Rocket Dhrystone
+program: 25,768 self-samples, no unmapped samples and the whole original log
+unchanged. The evaluator accounts for about 59% of samples. PBQP control227
+exceeded the controlled 4 GiB address-space budget for both models; the plain
+allocator comparison and initial extra-verifier attempt are archived separately.
+Greedy-priority control228 produced identical loaded executable code/data, and
+additional closed C-helper effect facts229 produced identical machine objects.
+Those controls remain private and triggered no firmware timings. Evidence is in
+`output/development/native-main-profile226-20261022T024000Z/findings.json`,
+`output/development/native-pbqp227-20261022T024225Z/findings.json`,
+`output/development/native-greedy-priority228-20261022T024700Z/findings.json` and
+`output/development/native-helper-effects229-20261022T025155Z/findings.json`.
+
+Native230 returns zero directly when a scalar input to a pure logical left shift
+is zero. This identity holds for every shift amount. The comparison uses LLVM
+[`freeze`](https://llvm.org/docs/LangRef.html#freeze-instruction), preserving the
+defined case where poisoned data is ignored by an overshift. The original value
+still feeds the nonzero path, and output allocation stays in the entry block.
+Full-width shift amounts, pointer helper memory effects and existing fallbacks
+remain intact. Selection uses integer values/types rather than core, signal,
+instance or workload identity; native C++ and device-driver objects are unchanged.
+
+Two balanced complete-program runs per engine/cell on CPU15, seed1 and the
+default 8 MiB stack, using the existing optional host-CPU path, measured:
+
+| Configuration | Program | Native225 | Zero-input fast return |
+| --- | --- | ---: | ---: |
+| RocketConfig | Towers | 1.91 s | 1.81 s |
+| RocketConfig | Dhrystone | 24.85 s | 23.94 s |
+| ShuttleConfig | Towers | 1.99 s | 1.93 s |
+| ShuttleConfig | Dhrystone | 23.09 s | 21.91 s |
+
+All 16 runs match full original logs, guest counters and completion cycles.
+Independent diagnostics preserve Rocket's complete retirement trace and six
+globals, Shuttle's entire final state and six valid dirty-cache values, and exact
+model/helper/SDK-hook counts. Fresh actual-main normalized LLVM and freshly
+compiled model/executable loaded sections match the qualified timed candidate.
+Runtime scheduling, state snapshots, clock/reset behavior, callbacks, diagnostics,
+hardware metadata and compiler tuning settings remain unchanged.
+
+The scalar fixture now checks 144 defined poison-data overshift and effectful
+amount-producer cases at O0/O3 with both codegen pipelines. An isolated LLVM
+helper double models the defined overshift edge; real arithmetic uses the native
+implementation and independent Python integer vectors. Existing 33,600 scalar
+LLVM vectors, full-ABI vectors, boundary/alias guards and ordinary-effect checks
+pass. A private mutation experiment incorrectly required one optimizer outcome
+for undefined control flow; that expectation was removed, and the corrected
+safe semantic cases and actual-main fixtures pass. Undefined variants are never
+executed or linked to firmware.
+
+These are targeted checks, not an all-native/config sweep; the historical 91-case
+checkpoint remains native204. No new configurations, firmware workloads or
+Verilator reference jobs were added. Current evidence does not reproduce the
+upstream speedup magnitude or establish all-config/general-VPI support. Commands,
+hashes and scopes are in
+`output/development/native-zero-shift230-20261022T030304Z/findings.json`,
+`measurement.json`, `qualification.json`, `promotion.json`, `unit.json` and
+`poison-edge.json` there.
+
+Native231 profiles the integrated native230 executable on the complete original
+Rocket Dhrystone program: 25,194 samples, none unmapped, with its entire original
+log unchanged. Model evaluation accounts for 59.8% of samples, runtime settling
+7.7%, and libc 18.4%. This is diagnostic evidence rather than a timing comparison.
+
+Three focused controls remain private. Conditional byte-exact state copyback232
+passes 9,120 independent byte-array cases and 104 protected-page cases at O0/O3,
+but reduces Dhrystone time only 1.5% on Rocket and 0.9% on Shuttle. Host-targeted
+native C++233 preserves all 18 freshly rebuilt generic baseline object sections
+per core; its Dhrystone reduction is about 3.0% on Rocket and 0.8% on Shuttle.
+Those flags affect only the private native C++ objects, so the experiment is not
+equivalent to setting the Makefile's current flags for all original drivers.
+A local source search overlapped part of the Rocket comparison; no positive
+performance claim rests on those timings. Control234 changes only the child
+process's [glibc copy threshold](https://www.sourceware.org/glibc/manual/latest/html_node/Hardware-Capability-Tunables.html)
+from the loader-confirmed 2,112 bytes to 1 MiB, using identical native230
+executables; both cores regress. The small or inconsistent gains do not justify
+integration or extra controls. Across these experiments, all 28 complete original
+timing runs retain their full logs, counters and completion cycles. No additional
+Towers or numerical/count runs were started after failed admission thresholds.
+
+Native230 remains the integrated implementation. Model/driver code, clocks/reset,
+callbacks, build defaults and the parked compatibility work are unchanged. No new
+configurations, firmware workloads or Verilator reference jobs were added. The
+all-config and general-VPI goal remains incomplete. Evidence and exact commands:
+`output/development/native-main-profile231-20261022T033826Z/findings.json`,
+`output/development/native-copyback232-20261022T033956Z/findings.json`,
+`output/development/native-host-cpp233-20261022T034625Z/findings.json`,
+`output/development/native-libcopy234-20261022T035057Z/findings.json`.
+
+Native235 and native236 test exposing scalar-input logical-left-shift arithmetic
+directly to standard LLVM optimization. Both retain the existing generated-pure
+type/provenance selection and generic fallback. They freeze control probes and
+shift amounts, keep finite in-range guards and local scratch, and use bounded
+host-word operations. Variant235 bounds its final partial-word loop explicitly;
+variant236 allocates eight additional private bytes so a word and carry-byte
+store fit without that loop. Only the original result bytes are read back.
+
+Each private emitter passes the original independent scalar/full-ABI integer,
+ordinary-effect and boundary tests under stock/bounded LLVM at O0/O3, including
+144 defined poison/ordinary-argument cases. Additional exact-storage fixtures
+check 32,928 byte-exact protected-boundary cases per candidate at O0/O3, including
+unaligned destinations and read-only amount buffers. Deliberately enlarged
+writes must produce an actual SIGSEGV/SIGBUS in the guard child. These tests use
+the exact generated scratch body with external storage only in the isolated
+fixture; no test double or mutation is linked to firmware.
+
+Fresh full-model builds remain within the controlled 4 GiB/180 s budget per
+compiler process. Native C++, original device-driver objects, full hardware and
+ELFs, model layout, clock/reset behavior, diagnostics and SDK callbacks are
+unchanged. Two balanced full Dhrystone runs per engine/core on CPU15, seed1 and
+the default 8 MiB stack measured:
+
+| Candidate | Configuration | Native230 baseline | Candidate |
+| --- | --- | ---: | ---: |
+| Inline235 | RocketConfig | 24.52 s | 25.25 s |
+| Inline235 | ShuttleConfig | 22.19 s | 23.26 s |
+| Padded236 | RocketConfig | 24.58 s | 25.23 s |
+| Padded236 | ShuttleConfig | 22.04 s | 22.71 s |
+
+All 16 complete logs, guest counters and completion cycles match the originals,
+but both candidates regress. Their larger model objects correlate with those
+results without establishing a cause. Both remain private; no Towers or further
+numerical/count qualification was justified, and native230 stays integrated.
+No extra tool dependency, build-default, runtime, configuration/workload or
+Verilator-reference change was made. These are focused little-endian x86-64
+host results, not all-config/general-VPI qualification. Evidence:
+`output/development/native-inline-scalar235-20261022T035758Z/findings.json` and
+`output/development/native-padded-scalar236-20261022T040540Z/findings.json`,
+with `unit.json`, `internal-guards.json`, `build-report.json` and
+`measurement.json` in each directory.
+
+Native237 audits the installed standard O3 pipeline on exactly the native230,
+inline235 and padded236 inputs. It already runs early CSE before forced inlining;
+all three reduce 324 scalar-helper calls to 108 per core at that point. Lost
+pre-inlining call elimination therefore does not explain the inline regressions.
+Native238 checks every SSA use of the surviving generic right-shift results:
+all 35 per core are scalar truncations after standard normalization, to observed
+widths 1, 4 or 64. The corrected diagnostic covers fastcc calls and cross-checks
+its call count against237. These are read-only audits, not a performance claim.
+
+Private native239 prototypes a bounded low-word C helper and conservative
+truncation-only LLVM result lowering. It checks complete uses, types, known pure
+provenance, reserved-name collisions and helper ABI; extra uses and quoted local
+identifiers retain the full ABI. The helper passes 69,840 independent integer
+vectors and 10,080 read-only protected-page vectors at O0/O3, including full upper
+shift amounts, signed extension, partial words and dirty padding. Stock/bounded
+LLVM at O0/O3 passes 42,000 additional vectors and 36 poison/ordinary-effect
+cases, plus alias, idempotence, collision and atomic ABI-failure controls. A valid
+renamed-argument case verifies the conservative owned-signature fallback.
+
+The prototype keeps existing scalar-input lowering first, then uses the same
+one-iteration InstCombine configuration as standard O3, then narrows eligible
+results. This removes 162 unused scalar calls and preserves the remaining 162;
+42 wide-result calls per core qualify before the rest of O3. The earlier order
+lost some scalar-input recognition and was not used for timings. Initial tooling
+and fixture corrections are archived and detailed in the report.
+
+Fresh models and the new arithmetic object use unchanged O3/native-CPU/llc-O3
+settings; other native objects, original device drivers, full hardware/ELFs,
+layout, clocks/reset, diagnostics and SDK callbacks remain frozen. Two balanced
+complete Dhrystone runs per engine/core on CPU15, seed1 and an 8 MiB stack measured
+Rocket 24.86 -> 24.39 seconds and Shuttle
+22.00 -> 21.98 seconds. All eight complete logs, counters and completion cycles match.
+The gain is too small/inconsistent for integration, so native230 remains current.
+No Towers, extra numerical/count qualification, new configuration/workload,
+Verilator reference or production/default change followed the failed admission.
+The all-config/general-VPI goal remains incomplete. Evidence:
+`output/development/native-phase-audit237-20261022T041325Z/findings.json`,
+`output/development/native-result-audit238-20261022T041530Z/findings.json` and
+`output/development/native-low-result239-20261022T041826Z/findings.json`.
+
+Native240 retains proven-pure wide arithmetic through Arc optimization and
+lowers surviving large shifts afterward. A shared ownership check requires both
+unit provenance markers, the exact generated name/mode/width, compatible integer
+arguments/result and an external declaration. Enabled/clocked calls and foreign
+or malformed contracts retain their handling; colliding unknown late symbols
+retain their arithmetic operation. Selection is based on IR/type/effect contracts,
+with no core, signal, instance or workload identity checks. The existing native
+C++ arithmetic, device drivers, clocks/reset and diagnostics are unchanged.
+
+Fresh controls reproduce the old metadata and native230 normalized LLVM exactly.
+Candidate bindings are generated from their actual new metadata. Two balanced
+complete-program runs per engine/core/program on CPU15, seed1 and the default
+8 MiB stack measured the existing optional stock/native-CPU path:
+
+| Configuration | Program | Native230 | Late arithmetic | Less elapsed time |
+| --- | --- | ---: | ---: | ---: |
+| RocketConfig | Dhrystone | 24.58 s | 20.59 s | 16.2% |
+| RocketConfig | Towers | 1.89 s | 1.59 s | 16.1% |
+| ShuttleConfig | Dhrystone | 21.94 s | 19.45 s | 11.3% |
+| ShuttleConfig | Towers | 1.95 s | 1.69 s | 13.0% |
+
+All 16 timing runs match complete original logs, guest counters and completion
+cycles. Independent diagnostics preserve Rocket's entire retirement trace and
+six final globals, Shuttle's six valid dirty-L1 results, and exact model
+evaluation, idle/stability-helper and SDK-hook counts. These comparisons use the
+original complete Dhrystone500 and Towers7 ELFs and unchanged original drivers.
+The measured compile settings are reproducible with:
+
+```sh
+make native CONFIG=RocketConfig ARCILATOR_FLAGS= ARC_MODEL_OPS=0 \
+  ARC_SHARED_PROCEDURES=0 ARC_ABI_BUFFERS=0 ARC_CODEGEN_PIPELINE=stock \
+  ARC_LATE_WIDE_ARITHMETIC=1 \
+  ARC_OPT_FLAGS='-mtriple=x86_64-unknown-linux-gnu -mcpu=native'
+```
+
+Use the same overrides on run targets; substitute `CONFIG=ShuttleConfig` for the
+other measured core. Empty `ARCILATOR_FLAGS` selects the exact measured pipeline.
+These timings compare native230 with native240 on this host, not a new matched
+Verilator comparison or a universal/default-pipeline speedup claim.
+
+Rocket's model buffer changes from 199,441 to 199,377 bytes; Shuttle's changes
+from 189,713 to 189,617. Interval accounting shows identical declared storage
+sizes and fewer alignment-gap bytes. Old state offsets are therefore not reused.
+Source-location-only diagnostic builds reproduce the timed LLVM and metadata
+exactly. Their static typed location/allocation-order correspondence compares all
+4,099 Rocket and 4,774 Shuttle allocation fields, including every logical memory
+row, and all 858/861 public ports. Repeated source-location groups use fixed IR
+order, never runtime-value matching. Logical value bits and the SDK context
+prefix match; alignment gaps and unused padding bits are not numerical values.
+Fresh source-tag-derived cache offsets locate Shuttle's valid resident results.
+Corruption, swapped distinct repeated-group fields, invalid tags and duplicate
+valid tags are detected by the independent oracles.
+
+Actual main passes 50,688 compiled arithmetic/stable/reset/sampling checks under
+stock/bounded O0/O3 with legacy controls, 22 provenance/collision/clock/enable
+guards, and the ordinary-DPI sensitivity suite. A new early/late O0/O3 fixture
+checks 12,384 defined zero-result bytes and 20 exact ordinary callbacks: poisoned
+data is ignored by a defined overshift, and an observable amount producer still
+runs when zero-data arithmetic makes its result unused. Fresh actual-main LLVM,
+metadata, generated factory/model objects and executable loaded sections match
+the timed, numerically qualified candidate. The shared provenance refactor also
+reproduces the disabled control. Actual Make checks verify 0/1 validation,
+invalidation, unchanged repeat settings, worker-count independence and default1.
+
+This is targeted qualification on the two authorized cores/programs, not an
+all-native/configuration sweep; the historical 91-case checkpoint remains
+native204. No new configurations, workloads or Verilator reference jobs were
+added, and the private time-compatibility change remains parked. General VPI and
+all-config qualification remain incomplete; upstream advertised speedup magnitude
+is not established. Exact commands, hashes and scopes are in
+`output/development/native-late-arithmetic240-20261022T043844Z/findings.json`,
+`measurement.json`, `qualification.json`, `promotion.json`, `state-layout.json`,
+`state-map.json`, `layout-padding-proof.json` and `Make-flags.json` there.
+
+Native251's general immutable-byte-table hoist passed 660,256 original/hoisted
+byte-value and callback-order checks, plus 29 fallback/collision guards. Removing
+constant stack initialization still made Rocket 3.1% slower and reduced Shuttle
+time by only 1.0%, so that prototype remains private.
+
+Native252 instead checks the existing `--lookup-tables=false` option on the same
+optional stock/native-CPU pipeline. Fresh controls reproduce native240's metadata
+and normalized LLVM exactly. Candidate factory objects are regenerated from
+their actual metadata and have identical allocated code/data to the qualified
+factory objects. All remaining native/runtime/math and original driver objects stay
+fixed. Two balanced complete-program runs per engine/core/program measured:
+
+| Configuration | Program | Native240 | Lookup tables disabled | Elapsed change |
+| --- | --- | ---: | ---: | ---: |
+| RocketConfig | Dhrystone | 20.69 s | 21.05 s | 1.8% slower |
+| ShuttleConfig | Dhrystone | 19.57 s | 18.47 s | 5.6% less time |
+| ShuttleConfig | Towers | 1.71 s | 1.62 s | 5.5% less time |
+
+All 12 timing runs reproduce the complete original logs, guest counters and
+completion cycles. Rocket's failed Dhrystone admission did not trigger Towers
+or further numerical runs. The admitted Shuttle setting additionally matches
+the original log, exact model/SDK counts, all 4,774 retained allocation fields
+(16,703 logical rows), 861 ports, the complete 189,617-byte final state and all
+six valid dirty-cache numerical results. Source-location-only diagnostics
+reproduce the timed LLVM and metadata and prove that every field/port offset is
+unchanged; repeated source groups retain the fixed IR-order correspondence.
+Corrupted values/state, invalid tags and duplicate valid tags are detected.
+Shuttle's original log has no instruction-by-instruction retirement trace.
+
+The measured Shuttle setting is reproducible with:
+
+```sh
+make native CONFIG=ShuttleConfig ARCILATOR_FLAGS='--lookup-tables=false' \
+  ARC_MODEL_OPS=0 ARC_SHARED_PROCEDURES=0 ARC_ABI_BUFFERS=0 \
+  ARC_CODEGEN_PIPELINE=stock ARC_LATE_WIDE_ARITHMETIC=1 \
+  ARC_OPT_FLAGS='-mtriple=x86_64-unknown-linux-gnu -mcpu=native'
+```
+
+Use the same overrides on run targets. This is an existing-option tuning result
+for the two original Shuttle workloads on this host; common settings remain
+unchanged. It is not a new paired Verilator comparison or an all-config/general
+VPI qualification. No configurations, workloads or reference jobs were added.
+Evidence, exact commands and hashes are in
+`output/development/native-constant-tables251-20261022T064606Z/findings.json` and
+`output/development/native-lookup-disabled252-20261022T065931Z/findings.json`,
+`measurement.json`, `qualification.json`, `state-layout.json` and `state-map.json`
+there.
+
+`ARC_DISTRIBUTE_WIDE_STORES=1` enables optional LLVM store distribution after
+ordinary optimization and before codegen block boundaries. It removes a large
+integer PHI when a closed, single-use expression leads to a full-width store.
+The expression and store execute on the selected incoming edge; conditional
+edges are split where necessary. External operands must already be available
+on every edge. The store crosses only pure instructions, proven-disjoint
+ordinary loads and the end of a distinct scratch lifetime. Other calls, writes,
+volatile/atomic accesses and uncertain lifetimes or aliases retain the original
+code. Source loads and lifetime markers stay in place, and every retained state
+bit is preserved. The option defaults to `0`; eligibility uses LLVM types,
+control flow and memory effects.
+
+Native272 measured this option against the qualified native240 Rocket and
+lookup-disabled native252 Shuttle executables on the same host, using two
+balanced repeats of each admitted original program:
+
+| Configuration | Program | Control | Store distribution | Elapsed change |
+| --- | --- | ---: | ---: | ---: |
+| RocketConfig | Dhrystone | 20.47 s | 20.24 s | 1.1% less time |
+| ShuttleConfig | Dhrystone | 18.47 s | 17.65 s | 4.4% less time |
+| ShuttleConfig | Towers | 1.606 s | 1.556 s | 3.1% less time |
+
+Rocket's result was below admission, so no additional Rocket workload or
+numerical runs were launched. All twelve timing logs, guest counters and
+completion cycles match their original references. Shuttle additionally matches
+all 189,617 final state bytes, exact model/SDK counts, all retained fields and
+ports, and the six independent dirty-cache Dhrystone results. Corrupted state
+and values, invalid tags and duplicate valid tags are detected. Native273
+checks the actual integrated compiler with the option off and on against the
+qualified control and measured candidate model objects. Repository tests cover
+byte values, aliases, callbacks, protected memory boundaries, edge execution,
+and restricted lifetime/poison controls through both codegen pipelines.
+
+To reproduce the admitted Shuttle setting, add `ARC_DISTRIBUTE_WIDE_STORES=1`
+to the native252 command above and to its run targets. This is a host tuning
+result for the original programs; it does not establish every configuration,
+general VPI support, or a new paired Verilator comparison. Evidence is in
+`output/development/native-wide-stores272-20261022T121658Z/measurement.json`,
+`qualification.json`, `unit.json` and `controls.json`, and
+`output/development/native-wide-store-integration273-20261022T125014Z/integration.json`.
+
+`ARC_VECTOR_PACKING=1` enables optional fixed-vector representation of pure
+integer packing DAGs after ordinary optimization and store distribution. It
+handles bitwise operations, zero extension, scalar-conditioned selection and
+constant logical shifts within one basic block. Target vector legality and the
+estimated cost of every new operation, conversion, shuffle and mask determine
+eligibility. Rejected temporary instructions are removed. Left shifts restore
+the original integer width before reuse; per-lane shift amounts stay in range.
+Scalar memory access types and positions, native ABIs, state layout, freezes,
+PHIs and foreign calls retain their existing handling. Big-endian targets,
+unsupported types, flagged or dynamic shifts, small DAGs and unprofitable
+conversions retain scalar code. The setting defaults to `0`, participates in
+codegen cache invalidation, and has a matching `compiler/codegen.py
+--vector-packing` switch for both codegen pipelines.
+
+Native281 measured the original complete programs against the qualified
+native273 builds on the same host, with two balanced repeats per variant:
+
+| Configuration | Program | Control CPU time | Packing CPU time | CPU change |
+| --- | --- | ---: | ---: | ---: |
+| RocketConfig | Dhrystone | 20.99 s | 20.91 s | 0.4% less |
+| ShuttleConfig | Dhrystone | 18.10 s | 17.14 s | 5.3% less |
+| ShuttleConfig | Towers | 1.576 s | 1.512 s | 4.1% less |
+
+Rocket remains on its previous settings because its improvement was below
+admission. All twelve timing logs, guest counters and completion cycles match
+their original references. Shuttle also matches all 189,617 final-state bytes,
+exact model/SDK counts, retained fields and ports, and six independently decoded
+dirty-cache Dhrystone results. Corrupted values and state, invalid tags and
+duplicate valid tags are detected. Native282 verifies whole model objects and
+executables from the maintained CLI against the qualified controls and measured
+candidates with the option off and on. Tests cover values, aliases, callback
+order, protected memory boundaries, fallback paths and failed-build preservation
+through stock and bounded codegen. Dirty-byte fixtures use byte-sized loads and
+ordinary truncation so those inputs have defined semantics; these are targeted
+checks rather than a complete LLVM refinement proof.
+
+The admitted Shuttle setting is:
+
+```sh
+make native CONFIG=ShuttleConfig ARC_MODEL_OPS=0 ARC_SHARED_PROCEDURES=0 \
+  ARC_ABI_BUFFERS=0 ARC_CODEGEN_PIPELINE=stock \
+  ARC_DISTRIBUTE_WIDE_STORES=1 ARC_VECTOR_PACKING=1 \
+  ARC_OPT_FLAGS='-mtriple=x86_64-unknown-linux-gnu -mcpu=native' \
+  ARCILATOR_FLAGS='--lookup-tables=false'
+```
+
+Use the same settings for run targets. These measurements qualify tuning for
+the original workloads on this host. All-config and general VPI qualification
+remain incomplete. Evidence is in
+`output/development/native-vector-packing281-20261022T145919Z/measurement.json`,
+`qualification.json`, `unit.json`, `packing-unit.json` and `findings.json`, and
+`output/development/native-vector-packing-integration282-20261022T152250Z/integration.json`.
 
 The backend builds a small CIRCT pass against the installed SDK headers and
 loads it into the matching `circt-opt`. It partitions the native hardware into
@@ -107,7 +1109,7 @@ singleton indices keep bounds checks. `tests/singleton_cfg.py` checks 65,536
 independent results at each of O0/O2, including zero-width arguments and
 preserved function attributes.
 It also outlines large allocated-model procedures using `ARC_MODEL_OPS`
-(4,096 operations; set 0 to disable outlining). Stack allocations and layout
+(16,384 operations by default; set 0 to disable outlining). Stack allocations and layout
 anchors stay in their original frame; helpers retain the existing storage
 offsets and remain separate during LLVM optimization. The compiler port budget
 also applies to helper arguments and results. This path uses the stock CIRCT
@@ -126,13 +1128,486 @@ and
 `output/development/native-gemmini-model-budget-complete-20261018T222624Z/report.json`.
 Subsequent measurements with the byte-identical baseline executable varied
 substantially, so benchmark the selected workload when tuning this budget.
-Defaults remain 4,096 operations. Per-stage `*-settings.json` dependencies
+The default is 16,384 operations. Per-stage `*-settings.json` dependencies
 record the effective frontend, filelist, partitioning, model, LLVM code-generation
 and host compiler/link options. Changing those options or tool paths rebuilds
 the affected stages and their consumers. Repeating the same settings preserves
 timestamps; changing only `ARC_BUILD_JOBS` does not rebuild compiled artifacts.
 Normal/debug and native/hybrid settings live in their respective build directories.
+
+`ARC_SHARED_PROCEDURES=1` forwards values between eligible private
+procedures through one invocation-local workspace. Each input is stored once,
+and consumers can read producer results directly. Public, address-taken,
+constrained-ABI, GC, `noipa` and `optnone` functions retain their signatures.
+Modules containing assembly retain their original ABIs as well.
+Additional workspace storage is capped at 1 MiB per caller; groups exceeding
+that limit retain their original ABI. The option defaults to 1 and participates
+in model-build settings, so toggling it rebuilds the affected artifacts.
+Set `ARC_SHARED_PROCEDURES=0` to disable sharing. The compiler CLI enables it
+when `--llvm-opt` is supplied; `compiler/llvm.py --no-share-procedures` disables
+it explicitly, and `--share-procedures` enables it explicitly.
+For example, after the normal environment setup:
+
+```sh
+make native CONFIG=RocketConfig ARC_MODEL_OPS=16384 ARC_SHARED_PROCEDURES=1
+```
+
+On the complete cached Shuttle hello workload, a fresh current-compiler and
+native-runtime build at 16,384 operations measured 19.33 s without sharing and
+18.73 s with sharing. Both completed the original program in 30,716 cycles,
+using the original selected C/C++ drivers, DRAMSim2, default clocks, O3 and the
+default 8 MiB stack. Verilator measured 2.21 s in the paired comparison.
+This covers cached hardware rather than fresh Scala elaboration, and does not
+establish a speedup for every configuration. Compiler/source fingerprints and
+commands are recorded in
+`output/development/native-shared-main170-20261021T062908Z/work/full-main-Shuttle/report.json`.
+`tests/shared_procedures.py` checks 6,291,456 independent words, nested and
+packed results, pointers, aliases, side effects, multiple returns, ABI and
+workspace-limit fallbacks, and failed-input preservation at O0/O3. Selected
+native regressions enable the pass by default; compare the original ABI with
+`tests/run_native.py --no-share-procedures --variants arrays sensitized-dpi scheduled-dpi latches`.
 Existing builds without settings files rebuild once to establish these dependencies.
+
+Large Boolean lookup tables with at least 256 entries and at least 75% of one
+constant value use a byte fill followed by the original differing and dynamic
+stores. Their storage remains local to the model invocation. The compiler keeps
+small tables and other element types on the existing path.
+`tests/boolean_arrays.py --circt-bin "$CIRCT_BIN"` checks 188,416 independent
+entries and adjacent memory guards at O0/O3. On the same complete cached Shuttle
+workload, this change measured 18.03 s against 18.62 s for the baseline, with
+both completing in 30,716 cycles. This is a workload-specific measurement;
+the report is in
+`output/development/native-boolean-fill172-20261021T072908Z/work/full-Shuttle/report.json`.
+
+The model compiler also skips phase-only observation-cache updates for generated
+combinational DPI coroutines during sequential sampling. Actual input changes
+retain their pending activation, including transitions that return to an earlier
+value while sampling is held. Startup and unsupported coroutine shapes use the
+existing behavior, and runtime fixed-point convergence remains unchanged.
+`compiler/model.py --freeze-sampling=false` disables this optimization.
+`tests/sampling_phases.py --circt-bin "$CIRCT_BIN"` compares every output and
+callback trace over 800 steps at O0/O2, including initial sampling values,
+transient inputs, clocks, aggregates and real values. The isolated optimization
+measured 15.73 s against 18.54 s on the complete cached Shuttle workload, with
+both completing in 30,716 cycles. Evidence is in
+`output/development/native-sampling-preserve173-20261021T073756Z/work/full-Shuttle/report.json`.
+
+With both optimizations, the native174 compiler and freshly built native
+runtime completed the same cached Shuttle workload in 15.22 s, compared with
+18.53 s for the shared-procedure baseline and 2.21 s for Verilator. Completion
+remained 30,716 cycles; model evaluations fell from 153,991 to 127,350.
+The benchmark snapshot matched all 37 top-level compiler sources at that checkpoint.
+Ten selected native fixture bodies and the standalone Boolean, sampling-phase
+and procedure-ABI checks also passed. These results cover cached Shuttle
+hardware and focused regressions; full configuration coverage remains incomplete.
+Reports are in
+`output/development/native-combined-main174-20261021T074442Z/work/full-Shuttle/report.json`
+and its sibling `main-native-checks/report.json` and `final-source-checks.json`.
+
+Native settling uses compiler-certified write-only output slots to avoid
+repeating a model evaluation solely because an unread output changed. Every
+private state, input, context and padding byte remains in the convergence
+comparison. The compiler checks overlapping storage aliases and records its
+certificate in `model.json`; native bindings must separately opt in to the
+combinational feedback contract. Unknown bindings, output readback, opaque DPI
+imports, context/exports, time-dependent models and compiler observation modes
+retain the full-state comparison. This affects settling comparisons; sequential
+sampling, nonblocking publication, analog resolution and snapshots keep their
+existing behavior.
+
+`ARC_OUTPUT_CONVERGENCE=1` enables this optimization by default.
+`ARC_OUTPUT_CONVERGENCE=0` disables it and participates in model-build settings;
+the equivalent compiler option is `--output-convergence=false`.
+`tests/convergence.py --circt-bin "$CIRCT_BIN"` checks storage alias/readback
+proofs, source effects, metadata validation, opt-out/observation modes, private
+state, feedback, unknown bindings, late exports and independently owned runtime
+layouts. `tests/build_settings.py` additionally checks real Rocket rebuilds,
+unchanged repeated settings, restoration and execution with the option disabled.
+
+The integrated native184 sources pass all 88 default and three optional native
+variants, the frontend and LLVM ABI/code-generation gates, RTL-library checks
+and coverage-integrity checks. The convergence regression covers 17 allocated
+layout/readback cases, 12 source-effect cases, 13 metadata cases, four compiler
+modes and 20 runtime cases. Fresh main-tree default-O3 Rocket hello, UART
+transmit/receive and JTAG register/memory tests pass at 32,896, 192,596 and
+37,226 cycles with the original device drivers and Verilator unavailable.
+These checks cover the recorded fixtures and Rocket workloads; qualification
+across every configuration remains incomplete. Reports are in
+`output/development/native-output-convergence-main184-20261021T094819Z/report.json`
+and its `work/integration-final/report.json`.
+
+On the complete cached Shuttle hello workload, the final native184 compiler
+certifies all 568 outputs without changing the complete generated LLVM or state
+layout. Fresh native runtime/device-driver builds measured 11.22 s enabled and
+15.53 s disabled, with byte-identical complete logs and 30,716 completion cycles.
+Model evaluations with the optimization totaled 92,468 (61,671 current-state
+and 30,797 staged evaluations). The paired Verilator reference measured 2.11 s;
+Arcilator remains slower on this workload. These timings use O3, default clocks,
+the complete original ELF, original selected drivers and the default 8 MiB
+stack. They cover cached Shuttle hardware rather than fresh Scala elaboration.
+The benchmark report is the native184 report directory's
+`work/full-Shuttle-final/report.json`.
+
+Compiler-generated wide shifts carry a separate pure-arithmetic contract.
+The sensitivity pass validates the declaration, width, mode, signature and
+contract before leaving a bare helper call in the combinational dataflow.
+An ordinary DPI call, a familiar symbol name or a no-readback contract alone
+keeps event-sensitive lowering. This removes coroutine observation state for
+calculations implemented by the backend's own byte arithmetic helper.
+`tests/pure_wide_shift.py --circt-bin "$CIRCT_BIN"` checks ten provenance
+cases and 25,344 independently computed values at O0/O3, including six
+widths, chained shifts, dirty padding, stable evaluations, clock/reset sampling
+and two model instances. Unmarked declarations exercise the legacy sensitivity
+path as a control. All 91 native variants and the frontend, LLVM ABI/codegen,
+RTL-library and coverage-integrity gates pass with these sources.
+
+On the complete cached Shuttle workload, native185 reduces model state from
+616,833 to 189,713 bytes and raw LLVM from 25.6 MB to 13.5 MB. Fresh default-O3
+builds measured 8.22 s against 11.23 s for native184 and 2.21 s for Verilator,
+with identical complete native logs and 30,716 completion cycles. O1/llc0 also
+completes the original program with the identical full log; its code-generation
+stage took 6.67 s and its program run 25.70 s. Those O1 measurements are a
+separate correctness run, not a paired performance comparison. These results
+cover cached Shuttle hardware; they do not establish fresh Scala elaboration,
+every configuration or faster-than-Verilator runtime. Evidence is in
+`output/development/native-pure-wide185-20261021T102658Z/work/full-qualified/report.json`,
+`work/pure-wide-tests/report.json`, `full-native-report.json` and
+`work/O1-llc0/report.json` within that same report directory.
+
+Fresh RocketConfig, MegaBoomV3Config and ShuttleConfig builds also complete the
+unchanged installed Dhrystone (500 iterations) and Towers (seven discs)
+benchmarks with DRAMSim2 and the original drivers. Two-run median wall times
+for native185 and the matched Verilator builds are:
+
+| Configuration | Benchmark | Native | Verilator |
+| --- | --- | ---: | ---: |
+| RocketConfig | Dhrystone | 142.31 s | 20.46 s |
+| RocketConfig | Towers | 10.74 s | 1.57 s |
+| MegaBoomV3Config | Dhrystone | 137.88 s | 54.29 s |
+| MegaBoomV3Config | Towers | 18.22 s | 7.17 s |
+| ShuttleConfig | Dhrystone | 116.74 s | 20.90 s |
+| ShuttleConfig | Towers | 10.17 s | 1.86 s |
+
+Printed benchmark output and positive `mcycle`/`minstret` values match across
+both engines and repeats for every case. Towers checks its results internally.
+Separate Rocket retired-store traces validate six final Dhrystone scalar
+values on both engines and match at 519,926 simulation cycles. Default
+MegaBoom and Shuttle lack the required source-register trace, so their
+Dhrystone numerical checks remain unavailable; successful completion alone
+does not prove those values. Timing runs omit verbose traces, use CPU 15 and
+seed 1, and exclude build activity. Rocket's native default-seed-1 timings
+were retained while its initially auto-seeded Verilator references were
+replaced afterward, so the primary Rocket timings did not alternate engines.
+Build costs are recorded separately, including failed attempts and deliberate
+pause intervals. The actual warm MegaBoom native build took 1,301.59 s after
+subtracting those pauses; this is not a cold-build comparison. All three
+native builds used an unavailable Verilator path and their executables have
+no Verilator dynamic-library or unresolved-symbol dependencies. Full commands,
+hashes, logs, limits and costs are in
+`output/development/native-three-core186-20261021T110034Z/first-pass-findings.json`.
+
+LLVM block limiting counts the selected payload of aggregate `insertvalue` and
+`extractvalue` instructions. Charging the entire SSA container at every field
+update had expanded one scalar-heavy MegaBoom function from 194 blocks to
+5,001; the corrected limiter produces 226 blocks. Actual aggregate memory
+operations and wide arithmetic retain their full payload costs. The regression
+`tests/aggregate_codegen.py` checks 2,097,152 independent lane values at O0/O3,
+including disabled writes and aliased input/output buffers. Its aggregate
+fixture falls from 289 artificial boundaries to two, while the wide-arithmetic
+control retains 97 boundaries.
+
+With the same complete MegaBoom LLVM input and default O3 settings, a fresh
+native187 LLVM stage measured 342.62 s: optimization took 329.07 s and parallel
+machine-code generation took 11.93 s. The optimized bitcode remains
+byte-identical to native185. Relinking the original 28 C++ driver objects and
+running the unchanged full Towers ELF reproduces the entire native185 log.
+The saved problematic partition alone compiles at O3 in 6.42 s with about
+293 MiB peak RSS; these are unpaired compiler diagnostics. All 91 native
+variants and the frontend/LLVM, RTL-library and coverage-integrity gates pass.
+The actual main compiler also rebuilds Rocket with Verilator unavailable and
+reproduces the original complete Towers log at 39,426 simulation cycles, with
+unchanged model inputs, optimized bitcode and metadata. Evidence is in
+`output/development/native-aggregate-blocks187-20261021T120424Z/promotion.json`,
+`full-native-report.json`, `required-gates-report.json` and
+`work/full-MegaBoom/report.json` within that report directory. The six-case
+runtime table above remains the native185 comparison; this compiler fix has
+not received a new paired runtime benchmark pass.
+
+Large single-use aggregate update chains are materialized at their original
+ordinary store before LLVM optimization. Field values keep their original
+evaluation points, shared intermediate snapshots remain available, and nested
+overlapping updates retain their order. Volatile stores and scalable-vector
+structures retain the original path. This avoids constructing an aggregate
+lattice for every intermediate field update while keeping the complete O3
+pipeline enabled.
+
+On the same complete MegaBoom input, native189's fresh LLVM stage measured
+56.58 s, including 42.32 s of optimization and 12.42 s of machine-code
+generation, with about 10.8 GiB peak compiler RSS. The preceding native187
+stage measured 342.62 s and about 21.3 GiB. These measurements cover fresh LLVM
+compilation of the saved hardware model; the original 28 C++ driver objects
+were relinked. The unchanged full Towers ELF reproduces the entire native185
+log. `tests/aggregate_stores.py` checks 487,424 lane values and 1,280 ordered
+callbacks at O0/O3, covering aliased and unaligned buffers, intermediate
+snapshots, PHI roots, nested overlapping fields, idempotence, volatile/scalable
+guards, large unsigned array indices and pointer address spaces. All 91 native
+variants and the required frontend/LLVM, RTL-library and coverage-integrity
+gates pass. The installed main compiler also reproduces the complete Rocket
+Towers log at 39,426 cycles with unchanged hardware input and metadata.
+Evidence is in
+`output/development/native-aggregate-stores189-20261021T124904Z/promotion.json`,
+`full-native-report.json`, `required-gates-report.json` and
+`work/full-MegaBoom/report.json` within that report directory. Its optimized
+LLVM representation changes; the independent value/callback tests and full
+program checks establish the recorded correctness scope.
+
+Controlled Rocket runtime decomposition (native191) uses the same complete
+RocketConfig and unchanged installed 500-run Dhrystone ELF, with the original
+DPI drivers, DRAMSim2, clocks, asynchronous resets and diagnostics. Single
+uninstrumented runs with seed 1, CPU 15 and the default 8 MiB stack measured:
+
+| Native compiler/runtime variant | Wall time | Model evaluations per primary DUT cycle |
+| --- | ---: | ---: |
+| Current native189 | 139.54 s | 6.001 |
+| Current compiler, conservative whole-state convergence | 183.32 s | 8.267 |
+| Stock SDK compiler, conservative whole-state convergence | 127.05 s | 8.267 |
+| Current compiler without procedure sharing | 137.80 s | 6.001 |
+| Current compiler without custom model outlining | 113.54 s | 6.001 |
+
+The matched Verilator control measured 19.67 s. All controls reproduce the
+entire native output, guest counters (232,125 `mcycle`, 213,024 `minstret`)
+and 519,926 TestDriver root cycles. The primary 500 MHz clock has 259,963
+rising edges; its cycles differ from the unused 1 ns TestDriver root clock.
+Separate retired-store traces validate six final Dhrystone values for the
+current, stock, no-sharing and no-outlining builds. These first-pass controls
+use one uninstrumented timing each; diagnostic profiling runs are separate.
+
+The current profile attributes 86.5% of runtime to model evaluation, 6.0% to
+state copies/comparisons and 6.2% to binding combinational/sample/commit work.
+Evaluation includes generated helper calls: CPU self samples place 16.6% in
+the native wide-shift helper and 63.8% in compiled-model object symbols.
+Unresolved libc samples cannot be assigned uniquely to model memory operations
+or scheduler copies. Under identical conservative convergence, the current and
+stock compilers execute the same 2,149,117 evaluations; their diagnostic mean
+evaluation costs are 76.9 us and 48.6 us. Output-convergence filtering reduces
+the current compiler's evaluations by 27.4% and uninstrumented wall time by
+23.9%. Counts and per-evaluation costs are measured independently.
+
+The stock control successfully uses matching SDK Arcilator, `opt -O3` and
+`llc -O3` on the identical full native-partitioned model input. It retains the
+required byte-pointer wide-value ABI bridge and native metadata-based glue;
+it uses no custom LLVM pass plugins or late model outlining. The upstream
+[arc-tests driver](https://raw.githubusercontent.com/circt/arc-tests/main/rocket/rocket-main.cpp)
+uses two evaluations per cycle and reports time around model evaluation.
+Its custom AXI memory model, reset/diagnostic settings and evaluation-only
+frequency differ from this complete Chipyard harness and wall-time scope.
+This does not establish a correct two-evaluation replacement scheduler for
+our multi-clock/DPI model. It also does not qualify every Chipyard configuration.
+Commands, hashes, compiler costs, profiles and numerical checks are in
+`output/development/native-upstream-gap191-20261021T141741Z/findings.json` and its referenced reports.
+
+Native192 evaluates partial-byte wide shifts one 64-bit word at a time while
+preserving the byte-pointer ABI, padding and arithmetic sign extension. On the
+same full RocketConfig/Dhrystone workload and default compiler settings, two
+balanced runs per engine measured median wall times of 139.98 s before the
+change and 133.84 s afterward, a 4.4% reduction. The matched Verilator median
+was 19.85 s. All output, 519,926 root cycles, guest counters and 1,560,026 model
+evaluations remain identical. Six final Dhrystone values pass the independent
+retired-store oracle. The helper still accounts for 14.5% of sampled CPU time;
+this change does not resolve the remaining performance gap.
+
+All 91 native variants pass with the new helper. Independent Python-integer
+checks cover 29,970 vectors across 111 widths at O0, O3 and with the undefined
+behavior sanitizer; 6,660 additional cases place all three buffers against
+inaccessible pages. These checks cover signed/unsigned shifts, overshifts,
+dirty padding, unaligned buffers, input preservation and bounded accesses.
+The actual main Rocket executable is byte-identical to the timed candidate,
+builds with Verilator unavailable and reproduces the entire original Towers
+log at 39,426 cycles. Its LLVM, object and state-layout artifacts remain
+byte-identical. Commands, source hashes, profiles and qualification evidence
+are in `output/development/native-word-shifts192-20261021T151618Z/findings.json`
+and `promotion.json` in that report directory.
+
+Native194 passes compact shift amounts across the LLVM/C++ boundary. LLVM
+reduces the complete upper words to a nonzero flag and passes that flag with
+the low word and partial tail. C++ masks the partial word before choosing the
+bounded shift, preserving declared-width behavior even with dirty padding.
+Known narrow sources reduce to a scalar low word and zero upper pieces;
+no full amount buffer crosses the C ABI. Previously compiled models retain
+the original byte-array amount entry point.
+
+With the same full RocketConfig/Dhrystone model and default settings, two
+balanced runs per engine measured medians of 135.31 s for native192 and
+105.65 s for native194, a 21.9% elapsed-time reduction. Verilator measured
+19.97 s. All output, guest counters, 519,926 root cycles and 1,560,026 model
+evaluations match. Six final Dhrystone values pass the retired-store oracle.
+The native helper accounts for 6.0% of CPU self samples, down from 14.5% in
+the preceding profile. Compiled-model evaluation remains the dominant cost;
+this workload still takes about 5.3 times Verilator's wall time.
+
+All 91 native variants and the frontend/LLVM, RTL-library and coverage-integrity
+gates pass. Independent tests cover 59,940 byte/compact-ABI vectors at O0, O3
+and with the undefined-behavior sanitizer, 8,640 generated-LLVM value checks,
+672 compiled-wrapper protected-page checks and 6,660 native-helper
+protected-page cases. Deliberately dropping high amount bits fails the oracle.
+The actual main Rocket binary is byte-identical to the timed candidate.
+Fresh main Rocket, MegaBoomV3 and Shuttle builds reproduce their entire original
+Towers logs with unchanged hardware inputs and model metadata, and have no
+Verilator link dependency. These are the recorded functional/performance
+scopes; all-config runtime qualification remains incomplete. Full commands,
+hashes and checks are in
+`output/development/native-scalar-shift194-20261021T155931Z/findings.json`,
+`promotion.json` and `matrix-qualification.json` in that directory.
+
+Native196 adds an optional compiler-certified idle-clock helper. The compiler
+derives its private clock-history slots from allocated Arc operations, proves
+that every clocked region is inactive under the helper's edge checks, and
+checks that all other unguarded output writes are independent of the changed
+phase inputs and histories. The versioned JSON certificate names the helper
+and its exact phase-clock inputs; native binding generation validates those
+inputs against the original partition metadata. Unknown effects, storage
+aliases, sampled procedural DPI controls, time/context/export dependencies and
+observation modes retain full evaluation. No RTL, diagnostics, clock/reset
+behavior or original device-driver interface is removed.
+
+The runtime preserves every foreign combinational/sample/commit call, analog
+resolution, staged snapshot/copyback, delta iteration and SDK evaluation hook.
+Bindings without the combinational reporting contract retain full evaluation.
+After an eligible sample, the next model body is an identity only when no
+commit reports a change, no immediate wakeup is pending, and the complete
+post-commit model state still matches the staged snapshot. Unreported commit
+writes therefore force ordinary evaluation. Use `ARC_IDLE_CLOCKS=0` to compile
+without the helper, or `+arc-no-idle-clocks` to retain full evaluation in an
+otherwise certified native executable.
+
+Two balanced, uninstrumented runs per engine on the same complete
+RocketConfig/Dhrystone workload measured medians of 104.35 s for native194 and
+76.90 s for native196, a 26.3% elapsed-time reduction. Verilator measured
+20.01 s; native remains about 3.8 times slower on this workload. A separate
+counter run records 1,040,020 full model evaluations instead of 1,560,026,
+while preserving all 1,560,026 SDK evaluation hooks. Entire program logs,
+guest counters and all six checked Dhrystone globals match.
+
+All 91 native variants and the frontend/LLVM, RTL-library and coverage-integrity
+gates pass. Dedicated checks cover 29 compiler-proof cases, 17 metadata cases,
+five compiler CLI modes, 44 runtime comparisons and ten invalid runtime
+contracts, plus independent O0/O3 state comparisons. Runtime comparisons
+include callback values/order/counts, SDK hooks, commit/combinational/analog
+feedback, direct sample writes, unreported commit writes, falling-clock reset,
+native waveforms and recreation. Intentionally removing the post-commit guard
+fails the callback oracle. Actual main Rocket, MegaBoomV3 and Shuttle builds
+preserve their hardware inputs, partition metadata and physical state layouts,
+match the qualified private model objects and checked code/data sections, and
+reproduce the complete original Towers logs without a Verilator link dependency.
+Actual main Rocket also reproduces the entire Dhrystone retirement trace and
+passes its six-value numerical oracle. All-config runtime qualification remains
+incomplete. Evidence is in
+`output/development/native-idle-clock196-20261021T174210Z/findings.json`,
+`promotion.json`, `measurement.json` and `main-numerical-validation.json` there.
+
+Native198 adds an optional read-only stability query to the same compiler
+certificate. When the query proves that a combinational evaluation leaves
+non-output state unchanged, the runtime omits that evaluation's convergence
+snapshot and comparison. It still executes the model, all foreign callbacks,
+SDK evaluation hooks and delta iterations. Phase snapshots and the post-commit
+equality guard remain in place. `+arc-full-state-snapshots` disables this
+snapshot optimization; `+arc-no-idle-clocks` disables both certified helpers.
+Both helpers now inspect the physical bytes of held clocks and private
+histories: noncanonical bytes force full evaluation without changing storage.
+This closes a padding case found while qualifying the earlier idle helper.
+
+Two balanced, uninstrumented runs per engine on the complete Rocket/Dhrystone
+workload measured medians of 77.68 s for native196 and 74.04 s for native198,
+a 4.7% elapsed-time reduction. The same native198 binary with full convergence
+snapshots measured 79.62 s. Verilator measured 20.34 s; native remains about
+3.6 times slower. A separate diagnostic run retains 1,040,020 model evaluations
+and all 1,560,026 SDK evaluation hooks, accepting 1,040,018 stability queries.
+Whole Dhrystone retirement traces and the six checked final globals match.
+
+All 91 native variants and the frontend/LLVM, RTL-library and coverage-integrity
+gates pass. Dedicated checks include 60 runtime comparisons, 393,216 read-only
+query checks at O0/O3, 524,256 dirty-byte fallback checks per helper and 131,072
+partial-width private-register checks. Deliberately accepting every query or
+removing the post-commit guard fails the regression oracle. Fresh workspace
+Rocket, MegaBoomV3 and Shuttle builds reproduce their original complete Towers
+logs with unchanged physical state layouts and no Verilator link dependency.
+Their model objects and checked code/data sections match the qualified private
+builds. The workspace Rocket binary also passes the complete Dhrystone
+retirement-trace comparison and six-value oracle. Evidence is in
+`output/development/native-stable-snapshots198-20261021T183336Z/findings.json`,
+`promotion.json`, `measurement.json` and `main-numerical-validation.json` there.
+All-config runtime qualification remains incomplete.
+
+An isolated native199 control compiles the identical complete Rocket hardware
+input with the matching stock Arcilator, stock `opt -O3` and `llc -O3`, plus
+the native wide-arithmetic C ABI adapter. It retains the native frontend and
+hardware partition. A second control changes only that compiled model object
+to the current custom compiler's object, using the exact same native glue,
+model metadata, runtime and original device-driver objects. Both use
+conservative full-state convergence.
+
+Two balanced, uninstrumented runs per control on the original complete
+Rocket/Dhrystone workload measured:
+
+| Compiler backend | Median elapsed time | Diagnostic full evaluations / SDK hooks |
+| --- | ---: | ---: |
+| Stock SDK plus native wide C ABI adapter | 84.28 s | 2,149,117 / 2,149,117 |
+| Current custom compiler, same conservative runtime | 139.55 s | 2,149,117 / 2,149,117 |
+
+Separate diagnostic runs reproduce the complete retirement trace and all six
+checked final globals with equal evaluation counts. Stock therefore takes
+39.6% less elapsed time in this compiler comparison. The current default,
+including its certified runtime optimizations, measured 73.65 s in the same
+balanced sequence. These controls establish a compiler-cost gap on this
+workload; they do not establish that every native compatibility pass can be
+removed across Chipyard configurations. Independent outlining, ABI-buffering
+and vector-guard comparisons follow below.
+The six timed runs were preserved after correcting a diagnostic-only Python
+oracle namespace error; the saved stock trace was rechecked and the remaining
+custom diagnostic completed. Commands, hashes, raw results and the required
+versus optional pass inventory are in
+`output/development/native-stock-minimal199-20261021T193753Z/findings.json`,
+`measurement.json`, `controls-build-report.json` and `upstream-pass-audit.json`
+there.
+
+Native200 measures those three optional compiler features independently on
+the same complete Rocket/Dhrystone model. Every candidate retains the exact
+native metadata, clock/output/stability certificates, runtime, original device
+drivers, hardware, reset behavior and diagnostics. ABI buffering disables both
+large-return and large-argument rewrites before and after LLVM optimization;
+the shared-procedure workspace remains enabled. Removing vector guards also
+removes their matching attribute-restoration pass.
+
+| Native compiler variant | Median elapsed time | Change from default |
+| --- | ---: | ---: |
+| Current default | 73.65 s | — |
+| Custom outlining disabled | 61.15 s | 17.0% shorter |
+| Private ABI buffering disabled | 54.52 s | 26.0% shorter |
+| Wide-vector guards disabled | 76.66 s | 4.1% longer |
+
+Each median covers two balanced, uninstrumented runs at CPU 15 with seed 1
+and the default 8 MiB stack. Separate instrumented runs reproduce the entire
+retirement trace, all six checked final globals, and every evaluation/helper/hook
+count from native198: 1,040,020 full evaluations and 1,560,026 SDK hooks.
+Both ABI-buffering runs measured 54.52 s. These results identify useful optional
+pass removals on Rocket; production defaults retain the existing scalability
+protections. The packed-cache regression motivating the vector guard also
+remains relevant to wider models. Full commands, hashes, compiler resources,
+exact counters and logs are in
+`output/development/native-optional-ablations200-20261021T195806Z/findings.json`,
+`build-report.json` and `measurement.json` there. All-config runtime qualification
+remains incomplete.
+
+Further complete-Shuttle measurements with explicit outlining budgets measured
+14.82 s at 32,768 operations and 14.32 s at 65,536, against about 15.12 s at
+16,384. Both retained the identical state layout, 127,350 model evaluations and
+30,716 completion cycles. The requested default remains 16,384; an individual
+build can select another budget with `ARC_MODEL_OPS=65536`. These measurements
+cover the cached Shuttle workload. Reports are in
+`output/development/native-budget32768-178-20261021T081149Z/work/full-Shuttle/report.json`
+and
+`output/development/native-budget65536-179-20261021T081714Z/work/full-Shuttle/report.json`.
+
 `tests/build_settings.py --work /path/to/new/verification` checks real incremental
 Rocket builds, restored baseline artifacts, and CPU execution in a fresh isolated
 checkout using the configured `CIRCT_BIN`, `RISCV` and `CXX`.
@@ -296,6 +1771,18 @@ partition outputs remain byte-identical in the recorded equivalence run.
 and `partition.json`. `native_build.py` compiles the selected original drivers
 with `native/`, which provides the scheduler and compatibility interfaces.
 `native/models.def` is shared by the C++ factory registration and RTL importer.
+Native builds compile scalar digital IO cells and clock inversion/OR/NOR logic
+into the hardware model to avoid extra settling across C++ boundaries.
+`EICG_wrapper` retains its transparent low-level enable latch through `ArcLatch`;
+the clock AND stays in the compiled model. Dynamic enable and test-enable
+changes while the input clock is high cannot open or close the gate.
+Nonstandard interfaces and analog connections retain their native bindings.
+The partition CLI enables this with `--native-combinational-models`; the native
+Makefile supplies it automatically, while the hybrid path keeps its existing
+boundaries. `tests/run_native.py --variants compiled-combin` checks chained
+gates, IO enables, inverted clocks, asynchronous resets and edge counts against
+an independent oracle, including enable changes during the high clock phase.
+
 The bindings currently include:
 
 - SimDRAM with the original simple-memory and DRAMSim2 implementations, SimTSI,
@@ -495,10 +1982,80 @@ or task qualifiers differ. Equivalent declarations still share their bridge;
 combining declarations cannot remove a required scope check.
 
 The DPI compatibility layer implements the scalar/vector/open-array operations
-used by the ported drivers. Its VPI support currently provides argument/product
-queries through `vpi_get_vlog_info`; arbitrary VPI hierarchy traversal, callbacks,
-and force/release are not implemented. Additional native bindings can use the
-`Binding`/`register_binding` API.
+used by the ported drivers. Native VPI provides argument/product queries through
+`vpi_get_vlog_info`, `cbStartOfSimulation` and `cbEndOfSimulation` through
+`vpi_register_cb`, cancellation through `vpi_remove_cb`, and error reporting
+through `vpi_chk_error`. A linked, null-terminated C `vlog_startup_routines`
+array runs once per process before binding initialization. Start callbacks run
+after binding initialization and before RTL initial blocks and SDK initialization
+hooks. End callbacks run after RTL finalization, while model storage and DPI
+scopes are still alive. Both phases run once per initialized model. With callbacks
+registered, `run()` finalizes and delivers end callbacks before reporting its
+result; a callback exception makes that run fail. Manual initialization/advance
+users receive end callbacks on model destruction. Recreated models need new
+registrations; startup routines are not replayed.
+
+Lifecycle registration copies the reason, function and user-data pointer. The
+caller retains ownership of user data. Object, time, value and index fields are
+ignored for these two reasons and are zero/null on delivery. Callbacks execute
+in registration order; new registrations for the current phase run in a later
+wave, and pending callbacks can be cancelled, including during delivery.
+Independent registrations have no count limit; a self-scheduling chain that
+exceeds 1,000 waves fails convergence. Delivered, cancelled and destroyed-model
+handles expire. VPI delivery does not establish an implicit DPI scope; a client
+calling a scope-dependent export must select its scope explicitly. No callback
+dispatch is added to the per-cycle scheduler, and the unused registry is lazy.
+
+Run `make native-vpi-test`, or `python3 tests/vpi_lifecycle.py` with `CIRCT_BIN`
+set, for the standalone C/C++ ABI, cancellation/lifetime/error, real SDK Runtime
+and complete run-loop waveform checks. The callback-enabled full original
+Shuttle Dhrystone qualification preserves all 189,617 final state bytes, the
+whole original log, evaluation/SDK counts and six independently decoded numerical
+results. Balanced Rocket/Shuttle Dhrystone and Towers comparisons with callbacks
+unused found no material runtime regression. Evidence is in
+`output/development/native-vpi-lifecycle286-20261022T163240Z/qualification.json`
+and `measurement.json` there. Those comparisons do not establish a VPI speedup.
+The maintained native287 integration rebuilds all selected runtime and original
+driver sources through `native_build.py` and reproduces both recommended
+Rocket/Shuttle executables byte for byte. Its callback-enabled Shuttle executable
+also matches the qualified native286 executable exactly. The focused Make target
+passes; this checkpoint does not repeat the full configuration/fixture matrix.
+See `output/development/native-vpi-lifecycle-integration287-20261022T170118Z/integration.json`
+and `native-build-CLI.json` there.
+
+Arbitrary VPI hierarchy traversal, value access, timed/value/synchronization
+callbacks, force/release and dynamic plugin loading are not implemented.
+Global SV time precision and original typed hierarchy must be retained before
+flattening to implement those APIs correctly; the runtime's femtosecond clock
+alone does not supply that metadata.
+
+`ARC_SOURCE_METADATA=1` optionally retains source metadata for each imported RTL
+boundary. The patched frontend's `--native-vpi-metadata=FILE` option writes a
+versioned JSON snapshot after successful Slang elaboration and before IR
+optimization. It contains Slang's detailed source AST, original packed/unpacked
+ranges, signed types, generated scopes and resolved time-scale facts for
+compilation units, packages and module/interface/program declarations, including
+unused declarations. Snapshot-local Slang address IDs preserve links to shared
+types and instance bodies. These IDs are opaque within one snapshot and cannot
+serve as runtime pointers or VPI handles across imports or rebuilt models.
+Unspecified time scales remain explicitly unresolved.
+
+`rtl.json` records each sidecar's path/hash, frontend command, input hashes,
+generated wrapper/stub sources and omitted `TestDriver` files. The snapshots
+describe individual frontend compilations; they do not establish the assembled
+model's global time precision or optimized storage correspondence. The normal
+default is off, and these records do not enable the unfinished VPI APIs.
+
+Run `make native-source-metadata-test CIRCT_BIN=/path/to/sdk/bin`; the test builds
+the matching patched frontend if needed. `ARC_SOURCE_METADATA_FRONTEND=/path/to/arcilator-verilog`
+selects an already-built matching frontend. The focused fixtures check source
+types/ranges/shared links, all 18 time-precision decades, source-only program
+scopes, separate compilation units, invalid output paths and unchanged original
+Moore/LLHD IR. The existing three-boundary native RTL fixture also preserves its
+whole final imported IR with metadata enabled. Evidence and commands are in
+`output/development/native-vpi-source-integration315-20261022T221147Z/` and its recorded parent. Unsupported callback reasons fail with a
+VPI error. Additional native bindings can use the `Binding`/`register_binding`
+API.
 Native callbacks expose DPI scopes through `svGetScope`, `svSetScope`,
 `svGetNameFromScope`, and `svGetScopeFromName`. Names use the original top name
 and partition instance path, separated by `/`. Context is restored between
@@ -564,8 +2121,30 @@ these banks.
 
 GPIO and SPI pins resolve enabled drivers before further combinational
 settling. The native model is two-state: floating and conflicting bits resolve
-to zero, and uncontested driven bits retain their values. The current pin
-resolver supports nets up to 64 bits. More complex analog behavior is unverified.
+to zero, and uncontested driven bits retain their values. Scalar drivers cover
+nets through 64 bits. Wider nets use `Binding::drive(name, value, mask)` with
+little-endian byte vectors containing exactly the port's byte count. Each mask
+bit enables one driven bit; unused high bits are ignored. Reusing the same
+binding and port replaces that driver's value and mask. Cached `Signal`
+addresses stay stable through net registration, settling and binding cleanup.
+`AnalogConst` retains its parameterized `WIDTH`, including signed constant
+extension above 64 bits. Wide storage is allocated only for wide nets; the
+existing scalar resolver is unchanged. More complex electrical analog behavior
+is unverified.
+
+Run `make native-analog-test CIRCT_BIN=/path/to/sdk/bin`, or
+`python3 tests/analog_nets.py --circt-bin=/path/to/sdk/bin --work=/tmp/analog-test`.
+The focused tests use the real SDK runtime, 21,863 checks at O0/O3, independent
+per-bit resolution and integer oracles, and verified HW partition/factory/VCD
+fixtures at widths 65, 73 and 257. They also exercise the existing VPI lifecycle
+and all 18 run-loop waveforms, without Scala elaboration or Verilator.
+
+Whole original Rocket/Shuttle Dhrystone and Towers passed 16 balanced runs;
+complete Dhrystone final states, diagnostics, model/SDK counts and VPI lifecycle
+also matched. The two-repeat CPU medians were 0.3–0.6% lower for Shuttle and
+1.2–1.5% higher for Rocket; this establishes no speedup claim. Evidence and exact
+commands are in `output/development/native-wide-analog-integration313-20261022T214937Z/` and its recorded parent.
+General VPI and verification across every configuration remain unfinished.
 
 `debug` preserves native registers, wires, and ports. `+vcdfile=PATH` or
 `+arc-vcdfile=PATH` writes a native VCD with physical timestamps and flattened
@@ -599,6 +2178,11 @@ delay; custom `CLOCK_PERIOD`, `RESET_DELAY`, `PRINTF_COND`, and `STOP_COND` macr
 overrides still require parity work. State initialization is deterministic zero.
 
 ## Validation
+
+The native `plusarg_reader` accepts integer `%d`, `%h`, `%x`, `%o`, and `%b`
+conversions in either case, zero modifiers such as `%0H`, and escaped `%%`
+characters in argument prefixes. Values and defaults retain the configured bit
+width, including widths greater than 64 bits.
 
 `make test` (also `native-test`) compiles and executes fixtures without Verilator. They cover
 2,051-bit integer, array, and nested-structure asynchronous registers, resets
@@ -1141,6 +2725,15 @@ compiler tools. Each case records those overrides and both limits:
 python3 tests/integration.py --cases rocket jtag --timeout 0 \
   --max-cycles 1000000 --make-setting ARC_OPT_LEVEL=1 \
   --make-setting ARC_LLC_OPT_LEVEL=0
+```
+
+The `block_model` case runs the complete repository `tests/blkdev.c` program on
+`BlockDeviceModelRocketConfig`. It writes and reads four sectors, checks all 512
+data values, and requires the program's `All correct` result. The `block` case
+exercises the original SimBlockDevice C++ driver on `SimBlockDeviceRocketConfig`.
+
+```sh
+python3 tests/integration.py --runtime native --cases block_model --timeout 0
 ```
 
 The `ara_rocket_4096`, `ara_rocket_8192`, `ara_shuttle_4096`, and

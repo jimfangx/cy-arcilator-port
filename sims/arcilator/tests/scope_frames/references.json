@@ -1,0 +1,42 @@
+[
+  {
+    "case": "package",
+    "source_sha256": "5a3d560ba09d4326b61010d9c06319b5c23b53f7861fc133303428fe2c12c286",
+    "reference": "Icarus Verilog 12.0 original unchanged SV, concurrent process order unrestricted"
+  },
+  {
+    "case": "unit",
+    "source_sha256": "fbf07f76970753e86a6c4422094b2447cf369c3b9c74c46db020741016d0dc8c",
+    "reference": "Icarus Verilog 12.0 original unchanged SV, concurrent process order unrestricted"
+  },
+  {
+    "case": "physical",
+    "source_sha256": "e22f644c770abf0cd2608424c9ac56b2a4529eaffdf22f342a8e49706a343409",
+    "reference": "Icarus Verilog 12.0 original unchanged SV, concurrent process order unrestricted"
+  },
+  {
+    "case": "sibling",
+    "source_sha256": "7b1e65d630c16d171ef21253318bfb2095d8ae1d8ad5e560e53e1f13d8ca93be",
+    "reference": "Icarus Verilog 12.0 original unchanged SV, concurrent process order unrestricted"
+  },
+  {
+    "case": "relative",
+    "source_sha256": "12fd8bbc7e107a2daca8a2af613b0eb869eb06c4c43cbd8994bf57a49cbbe8a9",
+    "reference": "Icarus Verilog 12.0 original unchanged SV, concurrent process order unrestricted"
+  },
+  {
+    "case": "nested",
+    "source_sha256": "14ca3ff18df3bedcc731ff00c24641c272c809bce67402718017b6cd33d00799",
+    "reference": "Icarus Verilog 12.0 original unchanged SV, concurrent process order unrestricted"
+  },
+  {
+    "case": "upward",
+    "source_sha256": "964897a9eba60961505abe58911b810771b95b570099809bbb5c7d544018ad6f",
+    "reference": "Icarus Verilog 12.0 original unchanged SV, concurrent process order unrestricted"
+  },
+  {
+    "case": "bare_calls",
+    "source_sha256": "06f5c750b059fd03af22c7ad8a44b8572a879f52fd528ab6a5621bc2d9455b8a",
+    "reference": "Icarus Verilog12 original unchanged SV, concurrent process order unrestricted"
+  }
+]

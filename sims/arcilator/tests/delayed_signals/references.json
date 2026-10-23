@@ -1,0 +1,23 @@
+{
+  "status": "recorded",
+  "samples": 12001,
+  "maximum_fs": 12000,
+  "source_sha256": "f5875cc6265c421bdb518dec150b59a3ed0af2df3ef87efa6af180407afa6c26",
+  "stimulus_sha256": "a338139c08faa7a77e66e82aeddbb57c1f34d3b77871cda22325e5e44e4a03c3",
+  "raw_reference_sha256": "7315f1f9324dfd82ad851e7ab635b1284bac120e4e92fd1cb8164d82ae17525c",
+  "reference_sha256": "0a12123e4d99991802586e812f3130950b35d2c0e3b74d389dc89c99d3bd6d27",
+  "compiler_sha256": "a6071e4b4a68feafca0c8ee0e6aa275eee9a43a108c62801cfd1eca6eab6d8a3",
+  "runtime_sha256": "a10bd7d4a0850308ac8c2c98115b6a3084f9be978307610f2a521190c28f4023",
+  "compile_command": [
+    "/tmp/arcilator-pure-scope82/oracle/usr/bin/iverilog",
+    "-B/tmp/arcilator-pure-scope82/oracle/usr/lib/x86_64-linux-gnu/ivl",
+    "-g2012",
+    "-s",
+    "Ref",
+    "-o",
+    "/home/ubuntu/chipyard/sims/arcilator/output/development/native-delayed-signals114-20261020T130329Z/work/stock-timing-oracle/full-reference.vvp",
+    "/home/ubuntu/chipyard/sims/arcilator/output/development/native-delayed-signals114-20261020T130329Z/chipyard/sims/arcilator/tests/native_delayed_signals.sv",
+    "/home/ubuntu/chipyard/sims/arcilator/output/development/native-delayed-signals114-20261020T130329Z/work/stock-timing-oracle/full-reference.sv"
+  ],
+  "scope": "Independent stockSV inertial timing oracle including sub-ps and13/65/193-bit values, chained delays, rejected short pulses, constant initial drive, delayed clock, and an input transition exactly at pending clock deadline. Unknown startup bits map to zero for native two-state comparison; all defined bits retained."
+}
