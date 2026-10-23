@@ -1,0 +1,9 @@
+// The original SimNetwork.v interface. No external TAP device is selected.
+module {
+  hw.module.extern private @SimNetwork(in %clock : !seq.clock, in %reset : i1, in %net_out_valid : i1, in %net_out_bits_data : i64, in %net_out_bits_keep : i8, in %net_out_bits_last : i1, out net_in_valid : i1, out net_in_bits_data : i64, out net_in_bits_keep : i8, out net_in_bits_last : i1, out net_macAddr : i48, out net_rlimit_inc : i8, out net_rlimit_period : i8, out net_rlimit_size : i8, out net_pauser_threshold : i16, out net_pauser_quanta : i16, out net_pauser_refresh : i16)
+  hw.module @NetworkModelProbe(in %clock : i1, in %reset : i1, in %net_out_valid : i1, in %net_out_bits_data : i64, in %net_out_bits_keep : i8, in %net_out_bits_last : i1, out net_in_valid : i1, out net_in_bits_data : i64, out net_in_bits_keep : i8, out net_in_bits_last : i1, out net_macAddr : i48, out net_rlimit_inc : i8, out net_rlimit_period : i8, out net_rlimit_size : i8, out net_pauser_threshold : i16, out net_pauser_quanta : i16, out net_pauser_refresh : i16) {
+    %clk = seq.to_clock %clock
+    %valid, %data, %keep, %last, %mac, %inc, %period, %size, %threshold, %quanta, %refresh = hw.instance "nic" @SimNetwork(clock: %clk: !seq.clock, reset: %reset: i1, net_out_valid: %net_out_valid: i1, net_out_bits_data: %net_out_bits_data: i64, net_out_bits_keep: %net_out_bits_keep: i8, net_out_bits_last: %net_out_bits_last: i1) -> (net_in_valid: i1, net_in_bits_data: i64, net_in_bits_keep: i8, net_in_bits_last: i1, net_macAddr: i48, net_rlimit_inc: i8, net_rlimit_period: i8, net_rlimit_size: i8, net_pauser_threshold: i16, net_pauser_quanta: i16, net_pauser_refresh: i16)
+    hw.output %valid, %data, %keep, %last, %mac, %inc, %period, %size, %threshold, %quanta, %refresh : i1, i64, i8, i1, i48, i8, i8, i8, i16, i16, i16
+  }
+}

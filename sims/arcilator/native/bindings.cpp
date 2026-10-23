@@ -2,6 +2,7 @@
 #include "runtime.h"
 #include "svdpi.h"
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
@@ -832,9 +833,27 @@ class JTAG : public Binding {
   bool previous_reset = false, initialized = false;
   unsigned char tck = 0, tms = 0, tdi = 0, trst = 0, tdo = 0;
   uint64_t output_at = never, tdo_at = never;
+  struct DelayedOutput {
+    const char *name;
+    uint32_t source = 0, delivered = 0;
+    uint64_t at = never;
+  };
+  // SimJTAG.v has five separate inertial continuous assignments. An
+  // unchanged pin must keep its pending transition when another pin changes.
+  std::array<DelayedOutput, 5> outputs{
+      {{"jtag_TCK"}, {"jtag_TMS"}, {"jtag_TDI"}, {"jtag_TRSTn"}, {"exit"}}};
+  uint64_t next_output_at = never;
+  bool outputs_observed = false;
   unsigned char tdo_next = 0;
   int exit = 0;
   unsigned char random_tdo = 0;
+
+  uint64_t delay_deadline() const {
+    constexpr uint64_t delay_fs = 100000;
+    if (delay_fs >= never - runtime.time_fs())
+      throw std::runtime_error("native JTAG delay exceeds time range");
+    return runtime.time_fs() + delay_fs;
+  }
 
 public:
   using Binding::Binding;
@@ -848,7 +867,7 @@ public:
     auto next = get("jtag_TDO_driven") ? get("jtag_TDO_data") : random_tdo;
     if (next != tdo_next) {
       tdo_next = next;
-      tdo_at = runtime.time() + 100;
+      tdo_at = delay_deadline();
     }
     return false;
   }
@@ -876,22 +895,50 @@ public:
       initialized |= bool(get("init_done"));
     }
     previous_reset = reset;
-    if (changed)
-      output_at = runtime.time() + 100;
+    if (changed) {
+      // Retain the existing driver-call wakeup even when every output is
+      // unchanged. Pending pin values have their own independent deadlines.
+      output_at = delay_deadline();
+      std::array<uint32_t, 5> values{{tck, tms, tdi, trst, uint32_t(exit)}};
+      next_output_at = never;
+      for (size_t i = 0; i < outputs.size(); ++i) {
+        auto &output = outputs[i];
+        if (!outputs_observed || values[i] != output.source) {
+          output.source = values[i];
+          output.at = outputs_observed && values[i] == output.delivered
+                          ? never
+                          : output_at;
+        }
+        next_output_at = std::min(next_output_at, output.at);
+      }
+      outputs_observed = true;
+    }
   }
-  uint64_t next_time() const override { return std::min(output_at, tdo_at); }
+  uint64_t next_time_fs() const override {
+    return std::min({output_at, next_output_at, tdo_at});
+  }
+  uint64_t next_time() const override {
+    auto at = next_time_fs();
+    return at == never ? never : at / 1000 + bool(at % 1000);
+  }
   void timed() override {
-    if (runtime.time() == tdo_at) {
+    auto now = runtime.time_fs();
+    if (now == tdo_at) {
       tdo = tdo_next;
       tdo_at = never;
     }
-    if (runtime.time() == output_at) {
-      port("jtag_TCK").set(tck);
-      port("jtag_TMS").set(tms);
-      port("jtag_TDI").set(tdi);
-      port("jtag_TRSTn").set(trst);
-      port("exit").set(uint32_t(exit));
-      output_at = never;
+    if (now == output_at || now == next_output_at) {
+      if (now == output_at)
+        output_at = never;
+      next_output_at = never;
+      for (auto &output : outputs) {
+        if (now == output.at) {
+          output.delivered = output.source;
+          output.at = never;
+        }
+        port(output.name).set(output.delivered);
+        next_output_at = std::min(next_output_at, output.at);
+      }
     }
   }
 

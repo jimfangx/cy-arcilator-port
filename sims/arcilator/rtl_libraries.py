@@ -6,8 +6,9 @@ import json
 import os
 from pathlib import Path
 import re
-import shlex
 import tempfile
+
+from filelists import source_paths
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -21,8 +22,7 @@ def discover(filelist, root=ROOT):
     concatenating these files would duplicate modules already in the wrapper.
     """
     selected = {}
-    for token in shlex.split(filelist.read_text(), comments=True):
-        path = Path(token)
+    for path in source_paths(filelist):
         match = re.fullmatch(r'nvdla_(large|small)\.preprocessed\.v', path.name)
         if match:
             selected.setdefault(match[1], []).append(path)

@@ -62,24 +62,33 @@ std::vector<uint8_t> analog_constant(const std::string &text, unsigned bits) {
 
 class DigitalGPIO : public Binding {
   std::vector<uint8_t> constant, constant_mask;
+  uint64_t scalar_constant = 0;
 
 public:
   using Binding::Binding;
   void configure() override {
-    if (module == "AnalogConst" && port("io").bits > 64) {
+    if (module == "AnalogConst") {
       unsigned bits = port("io").bits;
       if (number("WIDTH", bits) != bits)
         throw std::runtime_error(
             "native AnalogConst port/parameter width mismatch");
       auto value = analog_constant(text("CONST", "0"), bits);
-      constant_mask.assign(value.size(), 255);
-      constant = std::move(value);
+      if (bits <= 64) {
+        scalar_constant = 0;
+        for (unsigned i = 0; i < value.size(); ++i)
+          scalar_constant |= uint64_t(value[i]) << (i * 8);
+        constant.clear();
+        constant_mask.clear();
+      } else {
+        constant_mask.assign(value.size(), 255);
+        constant = std::move(value);
+      }
     }
   }
   bool combinational() override {
     if (module == "AnalogConst") {
       if (constant.empty())
-        drive("io", number("CONST"), ~uint64_t(0));
+        drive("io", scalar_constant, ~uint64_t(0));
       else
         drive("io", constant, constant_mask);
       return false;

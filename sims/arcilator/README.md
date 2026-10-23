@@ -1981,11 +1981,30 @@ Imports of one C function retain separate wrappers when their context, purity
 or task qualifiers differ. Equivalent declarations still share their bridge;
 combining declarations cannot remove a required scope check.
 
+Native source filelists expand separated `-f FILE` and `-F FILE` references
+without an HDL simulator. `-f` entries use the invocation directory; `-F`
+entries use the referenced list's directory. Quoted paths, shell escapes and
+`#`, `//`, and `/* ... */` comments are accepted; recursive or missing lists
+fail explicitly. These are source-selection lists: frontend and compiler flags
+continue to use their existing Make arguments. RTL import, clock/DTM contract
+selection, library discovery and C/C++ driver compilation share this reader.
+Make fingerprints listed HDL and driver inputs separately, so edits in nested
+lists invalidate the relevant build stages. Run `make native-filelist-test` for
+path/comment/recursion, incremental Make and real native C/C++ driver-link tests.
+C drivers inherit shared `-I`, `-D` and `-U` options in both joined and
+separated forms, retaining quoted paths and macro values as single arguments.
+C++ language-standard options stay on C++ compilations; missing shared-option
+operands fail before compilation or output replacement.
+
 The DPI compatibility layer implements the scalar/vector/open-array operations
 used by the ported drivers. Native VPI provides argument/product queries through
 `vpi_get_vlog_info`, `cbStartOfSimulation` and `cbEndOfSimulation` through
 `vpi_register_cb`, cancellation through `vpi_remove_cb`, and error reporting
-through `vpi_chk_error`. A linked, null-terminated C `vlog_startup_routines`
+through `vpi_chk_error`. An embedded `Runtime(0, nullptr, ...)` exposes a valid
+empty command line: its argument query succeeds with zero `argc` and null
+`argv`. `make native-vpi-test` checks this with the original UART driver as
+well as empty/nonempty argument transitions and borrowed-pointer identity.
+A linked, null-terminated C `vlog_startup_routines`
 array runs once per process before binding initialization. Start callbacks run
 after binding initialization and before RTL initial blocks and SDK initialization
 hooks. End callbacks run after RTL finalization, while model storage and DPI
@@ -2110,7 +2129,73 @@ observe only the original RTL inputs, preventing extra callbacks on clock phases
 On an observed edge, the scheduler snapshots settled inputs, lets every foreign
 sequential model sample pre-edge values, then commits native and foreign next
 state. Clock aliases share phase inputs; probe references are resolved before
-flattening. Timed clocks and JTAG delays use physical picosecond events.
+flattening. JTAG's 100 ps input/output delays retain femtosecond event origins.
+Each of the five output assignments keeps an independent inertial deadline:
+an unchanged pin retains its pending transition across driver calls, and a
+short pulse returning to its delivered value is cancelled. The 32-bit exit
+value is one delayed assignment. Run `make native-jtag-test` for standalone
+real-runtime checks of independent outputs, fractional delays, TDO pulses,
+reset history, clock division, sticky initialization, DPI scopes and model
+recreation at O0/O3/UBSAN, including timing fault controls.
+
+The older Sodor `SimDTM` binding also retains femtosecond origins for its
+100 ps input and output delays. The `dtm` variant of `tests/run_native.py`
+checks callbacks immediately before and after fractional input deadlines,
+all six delayed outputs, registered reset, output width masking and model
+recreation with a compiled CIRCT fixture and the original `debug_tick` ABI.
+
+Run `make native-predictor-test` to check `BranchPredictorHarness` and
+`BTBHarness` against BOOM's unchanged `predictor_sw.cc` and `btb_sw.cc` drivers.
+The standalone SDK Runtime tests 64-bit PC/history/target arguments, prediction
+before updates, saturating learning, BTB hits, reset/enable behavior, DPI scopes,
+deferred output commits and model recreation at O0/O3/UBSAN. Fault controls
+reject reversed callbacks, truncated PCs and premature output writes. This
+checks the native bindings directly without elaborating a hardware configuration.
+`make native-predictor-model-test` runs the same original-driver checks through
+a compiled MLIR fixture: hardware partitioning, Arc/LLVM lowering, O0/O3 model
+code generation and generated native port mappings. It checks the generated
+64-bit interface metadata and rejects deliberately swapped PC/history mappings.
+The two targets share their behavioral oracle and recreate both model contexts.
+
+`make native-block-device-test` compiles an MLIR fixture with the original
+`SimBlockDevice.cc`/`blkdev.cc` and FESVR context library. O0/O3 checks cover
+tag parameters, 32/64-bit arguments, stalled responses, interleaved tagged
+writes, queue/partial-write retention across reset, disabled mode and complete
+2 KiB disk-image comparisons. Fault controls reject truncated data, swapped
+tags and ignored response backpressure. The test uses FESVR from `RISCV` or
+Chipyard's local conda toolchain; it builds no firmware or hardware configuration.
+
+`make native-network-test` compiles an MLIR fixture with the original
+`SimNetwork.cc`/`device.cc`/`switch.cc` and FESVR context library. An empty
+device name selects the original switch's local path, which opens no TAP
+interface. O0/O3 tests send two packets to the driver's actual random MAC and
+compare every received word and last-flit flag against independently constructed
+packet bytes. Checks cover partial packets and queued receive data across reset,
+64-bit transmit arguments, the 48-bit MAC port, rate/burst defaults and overrides,
+DPI scopes and deferred output commits. Fault controls reject truncated transmit
+data, callbacks during reset and a corrupted MAC. It uses the same FESVR discovery
+as the block-device test and builds no firmware or hardware configuration.
+
+`make native-debug-rob-test` compiles all three DebugROB bindings with the original
+Rocket Chip `debug_rob.cc` driver. O0/O3 checks cover all eight 64-bit payload
+words, full-width tags, two hart queues, waiting entries, out-of-order writeback,
+already supplied data and exception/interrupt fields. Push callbacks run on rising
+edges; pop callbacks run on falling edges and publish on the next rising edge.
+Reset retains the last popped value and suppresses the first falling-edge pop
+after release, matching `debug_rob.v`. The test compares every byte of all 27
+published traces and rejects payload truncation, tag truncation, the wrong pop
+edge and missing reset history. It builds no firmware or hardware configuration.
+
+`make native-traffic-test` compiles TrafficEval ingress and egress with the
+original Constellation `TrafficEval.cpp`, `netrace.c` and `queue.c` drivers.
+O0/O3 checks cover the embedded multiline configuration, `+eval_params` file
+override, packet head/tail and unique IDs, backpressure, reset retention, deferred
+outputs, success/throughput-failure flags and timeout cycles above 32 bits.
+Independent byte traces and expected driver measurements check the complete
+single-flow run. Fault controls reject corrupted IDs, swapped completion flags,
+truncated cycles and clearing retained ingress payload during reset. This uses
+the original random-traffic path; netrace file playback is not covered. It builds
+no firmware or hardware configuration.
 
 Asynchronous registers are grouped by clock/reset into banks of at most 1,024
 bits. The native binding samples both clock and asynchronous-reset edges.
@@ -2128,15 +2213,19 @@ bit enables one driven bit; unused high bits are ignored. Reusing the same
 binding and port replaces that driver's value and mask. Cached `Signal`
 addresses stay stable through net registration, settling and binding cleanup.
 `AnalogConst` retains its parameterized `WIDTH`, including signed constant
-extension above 64 bits. Wide storage is allocated only for wide nets; the
+extension above 64 bits. Integer literals are reduced modulo the destination
+width, including literals larger than 64 bits that drive narrow ports. Constants
+are parsed during configuration and narrow drivers retain a scalar value.
+Wide storage is allocated only for wide nets; the
 existing scalar resolver is unchanged. More complex electrical analog behavior
 is unverified.
 
 Run `make native-analog-test CIRCT_BIN=/path/to/sdk/bin`, or
 `python3 tests/analog_nets.py --circt-bin=/path/to/sdk/bin --work=/tmp/analog-test`.
-The focused tests use the real SDK runtime, 21,863 checks at O0/O3, independent
+The focused tests use the real SDK runtime, 21,923 checks at O0/O3, independent
 per-bit resolution and integer oracles, and verified HW partition/factory/VCD
-fixtures at widths 65, 73 and 257. They also exercise the existing VPI lifecycle
+fixtures at widths 7, 64, 65, 73 and 257, including 128-bit parameters on narrow
+ports. They also exercise the existing VPI lifecycle
 and all 18 run-loop waveforms, without Scala elaboration or Verilator.
 
 Whole original Rocket/Shuttle Dhrystone and Towers passed 16 balanced runs;
@@ -3396,3 +3485,9 @@ it does not establish a fresh main-tree chiplet hardware build. The joint
 Scala corrections and broader configuration qualification remain separate.
 These checks establish the recorded correctness results; they do not measure
 an end-to-end speedup or establish every configuration or general VPI support.
+
+Native callback scopes use a private inline guard for the same thread-local
+exchange and restoration as `DpiContext`; its public constructor/destructor ABI
+remains available. `tests/idle_clock.py` also runs `tests/scope_guard.py`, which
+checks nested and throwing callbacks, public ABI calls, registry cleanup, thread
+isolation, and late-loaded shared libraries. The scope test needs only C++.

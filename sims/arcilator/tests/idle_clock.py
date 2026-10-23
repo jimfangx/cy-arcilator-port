@@ -616,5 +616,10 @@ from stable_snapshots import check as check_stable_snapshots
 report['stable_snapshots'] = check_stable_snapshots(sdk,
                                                     root / 'stable-snapshots',
                                                     cxx)
+subprocess.run([sys.executable, str(main / 'tests/scope_guard.py'),
+                '--cxx', cxx], check=True)
+report['scope_guards'] = json.loads(
+    (main / 'generated-src/scope-guard-test/report.json').read_text())
+assert report['scope_guards']['status'] == 'passed'
 report['status'] = 'passed'
 (root / 'report.json').write_text(json.dumps(report, indent=2) + '\n')

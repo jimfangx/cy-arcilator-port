@@ -1,0 +1,13 @@
+// Original debug_rob.v ports; both edge phases share one hardware clock.
+module {
+  hw.module.extern private @DebugROBPushTrace(in %clock : !seq.clock, in %reset : i1, in %hartid : i32, in %should_wb : i1, in %has_wb : i1, in %wb_tag : i64, in %trace_valid : i1, in %trace_iaddr : i64, in %trace_insn : i64, in %trace_priv : i3, in %trace_exception : i1, in %trace_interrupt : i1, in %trace_cause : i64, in %trace_tval : i64, in %trace_wdata : i512)
+  hw.module.extern private @DebugROBPushWb(in %clock : !seq.clock, in %reset : i1, in %hartid : i32, in %valid : i1, in %wb_tag : i64, in %wb_data : i512)
+  hw.module.extern private @DebugROBPopTrace(in %clock : !seq.clock, in %reset : i1, in %hartid : i32, out trace_valid : i1, out trace_iaddr : i64, out trace_insn : i64, out trace_priv : i3, out trace_exception : i1, out trace_interrupt : i1, out trace_cause : i64, out trace_tval : i64, out trace_wdata : i512)
+  hw.module @DebugROBModelProbe(in %clock : i1, in %reset : i1, in %push_hartid : i32, in %push_should_wb : i1, in %push_has_wb : i1, in %push_wb_tag : i64, in %push_valid : i1, in %push_iaddr : i64, in %push_insn : i64, in %push_priv : i3, in %push_exception : i1, in %push_interrupt : i1, in %push_cause : i64, in %push_tval : i64, in %push_wdata : i512, in %wb_hartid : i32, in %wb_valid : i1, in %wb_tag : i64, in %wb_data : i512, in %pop_hartid : i32, out out_valid : i1, out out_iaddr : i64, out out_insn : i64, out out_priv : i3, out out_exception : i1, out out_interrupt : i1, out out_cause : i64, out out_tval : i64, out out_wdata : i512) {
+    %clk = seq.to_clock %clock
+    hw.instance "push" @DebugROBPushTrace(clock: %clk: !seq.clock, reset: %reset: i1, hartid: %push_hartid: i32, should_wb: %push_should_wb: i1, has_wb: %push_has_wb: i1, wb_tag: %push_wb_tag: i64, trace_valid: %push_valid: i1, trace_iaddr: %push_iaddr: i64, trace_insn: %push_insn: i64, trace_priv: %push_priv: i3, trace_exception: %push_exception: i1, trace_interrupt: %push_interrupt: i1, trace_cause: %push_cause: i64, trace_tval: %push_tval: i64, trace_wdata: %push_wdata: i512) -> ()
+    hw.instance "wb" @DebugROBPushWb(clock: %clk: !seq.clock, reset: %reset: i1, hartid: %wb_hartid: i32, valid: %wb_valid: i1, wb_tag: %wb_tag: i64, wb_data: %wb_data: i512) -> ()
+    %v0, %v1, %v2, %v3, %v4, %v5, %v6, %v7, %v8 = hw.instance "pop" @DebugROBPopTrace(clock: %clk: !seq.clock, reset: %reset: i1, hartid: %pop_hartid: i32) -> (trace_valid: i1, trace_iaddr: i64, trace_insn: i64, trace_priv: i3, trace_exception: i1, trace_interrupt: i1, trace_cause: i64, trace_tval: i64, trace_wdata: i512)
+    hw.output %v0, %v1, %v2, %v3, %v4, %v5, %v6, %v7, %v8 : i1, i64, i64, i3, i1, i1, i64, i64, i512
+  }
+}

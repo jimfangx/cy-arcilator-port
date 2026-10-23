@@ -1,4 +1,5 @@
 #include "compat.h"
+#include "scope_guard.h"
 #include "svdpi.h"
 #include "vpi_user.h"
 #include <algorithm>
@@ -10,9 +11,17 @@
 #include <stdexcept>
 #include <utility>
 #include <vector>
+namespace chipyard_arc::detail {
+#if defined(__GNUC__) || defined(__clang__)
+__thread svScope current_scope = nullptr;
+#else
+thread_local svScope current_scope = nullptr;
+#endif
+} // namespace chipyard_arc::detail
 namespace {
 int saved_argc = 0;
 char **saved_argv = nullptr;
+bool arguments_registered = false;
 struct ScopeRegistry {
   std::mutex mutex;
   std::set<svScope> handles;
@@ -23,7 +32,7 @@ ScopeRegistry &scopes() {
   static ScopeRegistry registry;
   return registry;
 }
-thread_local svScope current_scope = nullptr;
+using chipyard_arc::detail::current_scope;
 struct VpiError {
   int level;
   char message[256];
@@ -69,6 +78,7 @@ void chipyard_arc::set_vpi_error(int level, const char *message) noexcept {
 void chipyard_arc::command_args(int argc, char **argv) {
   saved_argc = argc;
   saved_argv = argv;
+  arguments_registered = true;
 }
 extern "C" {
 svScope svGetScope() { return current_scope; }
@@ -113,7 +123,7 @@ void *svGetUserData(const svScope scope, void *key) {
 int svGetCallerInfo(const char **, int *) { return 0; }
 PLI_INT32 vpi_get_vlog_info(p_vpi_vlog_info info) {
   chipyard_arc::clear_vpi_error();
-  if (!info || !saved_argv)
+  if (!info || !arguments_registered)
     return 0;
   static char product[] = "Chipyard Arcilator native runtime";
   static char version[] = "1";

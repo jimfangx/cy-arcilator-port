@@ -27,7 +27,7 @@ def implementation_hashes(runtime='hybrid'):
         'bootrom.S', 'linker.ld', 'Makefile', 'bootrom.rv32.img', 'bootrom.rv64.img')]
     implementation += sorted(p for p in (SIM / 'compiler').glob('*') if p.suffix in ('.py', '.cpp', '.h'))
     if runtime == 'native':
-        implementation += [SIM / 'native.py', SIM / 'native_exports.py', SIM / 'native_build.py', SIM / 'native_hw.py', SIM / 'rtl_libraries.py']
+        implementation += [SIM / 'native.py', SIM / 'native_exports.py', SIM / 'native_build.py', SIM / 'native_hw.py', SIM / 'rtl_libraries.py', SIM / 'filelists.py']
         implementation += sorted(p for p in (SIM / 'compiler/verilog').iterdir()
                                  if p.suffix in ('.py', '.patch', '.json') or p.name == 'CMakeLists.txt')
         implementation += [ROOT / 'generators/radiance/src/main/resources/vsrc/vortex/hw/rtl/VX_platform.vh']

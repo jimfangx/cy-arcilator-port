@@ -57,6 +57,17 @@ static PLI_INT32 throwing(p_cb_data) {
 }
 extern "C" vpiHandle register_from_c(unsigned *);
 int main() {
+  s_vpi_vlog_info info{};
+  check(!vpi_get_vlog_info(&info), "unregistered command arguments accepted");
+  chipyard_arc::command_args(0, nullptr);
+  check(vpi_get_vlog_info(&info) == 1 && info.argc == 0 && !info.argv &&
+            info.product && info.version && !vpi_chk_error(nullptr),
+        "registered empty command arguments rejected");
+  char *empty_argv[] = {nullptr};
+  chipyard_arc::command_args(0, empty_argv);
+  check(vpi_get_vlog_info(&info) == 1 && info.argc == 0 &&
+            info.argv == empty_argv,
+        "zero-count borrowed argv identity changed");
   unsigned c_calls = 0;
   check(register_from_c(&c_calls), "C callback registration failed");
   int first = 0, second = 0;
@@ -119,11 +130,17 @@ int main() {
   detach(&first);
   char name[] = "core-vpi", *argv[] = {name};
   chipyard_arc::command_args(1, argv);
-  s_vpi_vlog_info info{};
   check(vpi_get_vlog_info(&info) == 1 && info.argc == 1 && info.argv == argv &&
             !vpi_chk_error(nullptr),
         "legacy argument ABI or error reset changed");
+  chipyard_arc::command_args(0, nullptr);
+  check(vpi_get_vlog_info(&info) == 1 && info.argc == 0 && !info.argv,
+        "argument recreation retained an earlier command line");
+  chipyard_arc::command_args(1, argv);
+  check(!vpi_get_vlog_info(nullptr) && vpi_get_vlog_info(&info) == 1 &&
+            info.argc == 1 && info.argv == argv,
+        "null query or argument restoration changed");
   std::puts("PASS: native VPI lifecycle copy, phase, cancellation, reentrancy, "
             "lifetime, stale handles, exceptions, bounded chains and legacy "
-            "argument ABI");
+            "argument ABI including empty command lines");
 }

@@ -56,6 +56,7 @@ def main():
         with log.open('w') as output:
             process = subprocess.Popen(command,
                                        cwd=work,
+                                       stdin=subprocess.DEVNULL,
                                        stdout=output,
                                        stderr=subprocess.STDOUT,
                                        start_new_session=True,
@@ -111,6 +112,21 @@ def main():
                 '-Wl,--wrap=arcRuntimeOnEval', *libraries, '-o', runtime_test
             ])
         run('runtime-execute', [runtime_test])
+        # Link the original UART driver: its vpi_get_vlog_info query must work
+        # for the embedding API's valid Runtime(0, nullptr, ...) constructor.
+        for ancestor in sim.parents:
+            drivers = ancestor / 'generators/testchipip/src/main/resources/testchipip/csrc'
+            if (drivers / 'SimUART.cc').is_file():
+                break
+        else:
+            raise FileNotFoundError('cannot locate original SimUART.cc/uart.cc drivers')
+        uart_test = work / 'uart-empty-args'
+        run('uart-empty-args-link', cxx + ['-O2', '-std=c++17'] + includes + [
+            here / 'native_uart_empty_args.cpp', *objects,
+            drivers / 'SimUART.cc', drivers / 'uart.cc', *libraries,
+            '-o', uart_test])
+        for mode in ('query', 'uart'):
+            run('uart-empty-args-' + mode, [uart_test, mode])
         # Exercise unchanged clock/reset/control/waveform and recreation paths
         # with the same freshly compiled runtime, with VPI unused.
         run_loop = work / 'run-loop'
@@ -126,7 +142,7 @@ def main():
         check(waves)
         report['status'] = 'passed'
         print(
-            'PASS: native VPI C/C++ ABI at O0/O3, real SDK lifecycle and all18 run-loop waveforms',
+            'PASS: native VPI C/C++ ABI at O0/O3, empty argv with original UART, real SDK lifecycle and all18 run-loop waveforms',
             flush=True)
     except BaseException as error:
         report.update(status='failed', error=str(error))

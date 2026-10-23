@@ -1,6 +1,7 @@
 #include "runtime.h"
 #include "compat.h"
 #include "evaluation.h"
+#include "scope_guard.h"
 #include "vpi_lifecycle.h"
 #include "vpi_user.h"
 #include <algorithm>
@@ -370,7 +371,7 @@ void Runtime::settle() {
       idle_next = false;
       bool changed = !unchanged && model_state_changed();
       for (auto *binding : combinational_bindings) {
-        DpiContext context(*binding->dpi_scope);
+        detail::ScopedDpiContext context(*binding->dpi_scope);
         changed |= binding->combinational();
       }
       changed |= resolve_analog();
@@ -395,7 +396,7 @@ void Runtime::settle() {
     // All foreign sequential models sample settled pre-edge values. Publish
     // their nonblocking outputs only after the native snapshot is complete.
     for (auto *binding : sample_bindings) {
-      DpiContext context(*binding->dpi_scope);
+      detail::ScopedDpiContext context(*binding->dpi_scope);
       binding->sample();
     }
     bool idle_clock = false;
@@ -412,7 +413,7 @@ void Runtime::settle() {
     for (auto &binding : bindings) {
       if (callback_schedule_enabled && !binding->needs_commit_callback())
         continue;
-      DpiContext context(*binding->dpi_scope);
+      detail::ScopedDpiContext context(*binding->dpi_scope);
       changed |= binding->commit();
     }
     idle_next = idle_clock && idle_clock_model && !changed &&
@@ -430,7 +431,7 @@ void Runtime::initialize() {
     throw std::runtime_error("native bindings were already initialized");
   vpi_lifecycle::startup();
   for (auto &binding : bindings) {
-    DpiContext context(*binding->dpi_scope);
+    detail::ScopedDpiContext context(*binding->dpi_scope);
     binding->initialize();
   }
   initialized = true;
@@ -512,7 +513,7 @@ void Runtime::advance_fs(uint64_t target_fs,
   for (;;) {
     uint64_t next = std::min(target_fs, next_model_time());
     for (auto *binding : timed_bindings) {
-      DpiContext context(*binding->dpi_scope);
+      detail::ScopedDpiContext context(*binding->dpi_scope);
       next = std::min(next, std::max(now_fs, binding->next_time_fs()));
     }
     now_fs = next;
@@ -522,14 +523,14 @@ void Runtime::advance_fs(uint64_t target_fs,
       drive_applied = true;
     }
     for (auto *binding : timed_bindings) {
-      DpiContext context(*binding->dpi_scope);
+      detail::ScopedDpiContext context(*binding->dpi_scope);
       if (binding->next_time_fs() <= now_fs)
         binding->timed();
     }
     settle();
     bool pending_now = next_model_time() == now_fs;
     for (auto *binding : timed_bindings) {
-      DpiContext context(*binding->dpi_scope);
+      detail::ScopedDpiContext context(*binding->dpi_scope);
       pending_now |= binding->next_time_fs() <= now_fs;
     }
     if (now_fs == target_fs && !pending_now)
@@ -555,7 +556,7 @@ int Runtime::run() {
       uint64_t next =
           std::min(in_femtoseconds(root_next), in_femtoseconds(reset_at));
       for (auto *binding : timed_bindings) {
-        DpiContext context(*binding->dpi_scope);
+        detail::ScopedDpiContext context(*binding->dpi_scope);
         next = std::min(next, std::max(now_fs, binding->next_time_fs()));
       }
       next = std::min(next, next_model_time());
@@ -589,7 +590,7 @@ int Runtime::run() {
         }
       }
       for (auto *binding : timed_bindings) {
-        DpiContext context(*binding->dpi_scope);
+        detail::ScopedDpiContext context(*binding->dpi_scope);
         if (binding->next_time_fs() <= now_fs) {
           binding->timed();
           evaluate_event = true;

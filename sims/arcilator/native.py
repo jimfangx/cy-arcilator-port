@@ -3,8 +3,9 @@
 import argparse
 import json
 import re
-import shlex
 from pathlib import Path
+
+from filelists import source_paths
 from partition import unquote
 from native_exports import generate_exports
 
@@ -15,8 +16,7 @@ def clock_parameters(module, filelist):
         raise ValueError(
             f'{module} requires its original HDL filelist: {filelist}')
     files = [
-        Path(p) for p in shlex.split(filelist.read_text(), comments=True)
-        if Path(p).suffix in ('.v', '.sv')
+        p for p in source_paths(filelist) if p.suffix in ('.v', '.sv')
     ]
     files.sort(key=lambda p: p.stem != module)
     for path in files:
@@ -47,8 +47,7 @@ def dtm_binding(filelist):
         raise ValueError(
             f'SimDTM requires its original HDL filelist: {filelist}')
     bodies = []
-    for token in shlex.split(filelist.read_text(), comments=True):
-        path = Path(token)
+    for path in source_paths(filelist):
         if path.suffix not in ('.v', '.sv') or not path.is_file():
             continue
         body = re.search(r'\bmodule\s+SimDTM\b(.*?)\bendmodule\b',

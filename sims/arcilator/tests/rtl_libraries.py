@@ -3,8 +3,10 @@
 import importlib.util
 from pathlib import Path
 import tempfile
+import sys
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 spec = importlib.util.spec_from_file_location(
     'chipyard_rtl_libraries', Path(__file__).resolve().parents[1] / 'rtl_libraries.py')
 libraries = importlib.util.module_from_spec(spec)

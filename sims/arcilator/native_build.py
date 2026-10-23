@@ -7,6 +7,26 @@ import os
 import shlex
 import subprocess
 
+from filelists import source_paths
+
+
+def c_preprocessor_flags(flags):
+    """Keep shared -I/-D/-U options with joined or separate operands."""
+    result = []
+    tokens = iter(flags)
+    for flag in tokens:
+        if flag in ('-I', '-D', '-U'):
+            try:
+                operand = next(tokens)
+            except StopIteration as error:
+                raise ValueError(
+                    f'shared C preprocessing option {flag} requires an operand'
+                ) from error
+            result.extend((flag, operand))
+        elif flag.startswith(('-I', '-D', '-U')):
+            result.append(flag)
+    return result
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -39,18 +59,28 @@ def main():
         sim / 'native/analog.cpp', sim / 'native/analog_nets.cpp',
         sim / 'native/additional.cpp'
     ]
-    for token in shlex.split(args.filelist.read_text(), comments=True):
-        path = Path(token)
+    selected_sources = {path.resolve() for path in sources}
+    try:
+        foreign_sources = list(source_paths(args.filelist))
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    for path in foreign_sources:
         if path.suffix in ('.c', '.cc', '.cpp', '.cxx'):
             if not path.is_file():
                 parser.error('missing foreign driver source: ' + str(path))
-            if path not in sources:
+            identity = path.resolve()
+            if identity not in selected_sources:
                 sources.append(path)
-    if sim / 'native/wide.cpp' not in sources:
+                selected_sources.add(identity)
+    if (sim / 'native/wide.cpp').resolve() not in selected_sources:
         sources.append(sim / 'native/wide.cpp')
-    args.build.mkdir(parents=True, exist_ok=True)
     includes = ['-I' + str(sim), '-I' + str(sim / 'native/include')]
     cxxflags = shlex.split(args.cxxflags)
+    try:
+        shared_c_flags = c_preprocessor_flags(cxxflags)
+    except ValueError as error:
+        parser.error(str(error))
+    args.build.mkdir(parents=True, exist_ok=True)
 
     def compile_source(item):
         index, source = item
@@ -59,10 +89,7 @@ def main():
             command = shlex.split(args.cc) + [
                 '-O3', '-std=gnu11'
             ] + includes + shlex.split(args.cflags)
-            command += [
-                flag for flag in cxxflags
-                if flag.startswith(('-I', '-D', '-U'))
-            ]
+            command += shared_c_flags
         else:
             command = shlex.split(args.cxx) + ['-O3', '-std=c++17'
                                                ] + includes + cxxflags

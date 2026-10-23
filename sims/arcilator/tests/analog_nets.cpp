@@ -101,7 +101,7 @@ int main() {
   for (unsigned bits : {1, 7, 8, 31, 63, 64, 65, 73, 127, 128, 129, 257, 1027})
     resolution(bits);
   register_builtin_bindings();
-  for (unsigned bits : {65, 73, 127, 128, 129, 257, 1027}) {
+  for (unsigned bits : {7, 64, 65, 73, 127, 128, 129, 257, 1027}) {
     ArcRuntimeModelInfo info{ARC_RUNTIME_API_VERSION, 64, "ConstantTest", nullptr};
     Runtime r(0, nullptr, info, evaluate);
     r.add_analog_signal("pad", bits);

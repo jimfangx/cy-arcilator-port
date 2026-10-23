@@ -190,9 +190,12 @@ arc_input := $(arc_dir)/native-design.mlir
 ARC_SOURCE_METADATA ?= 0
 $(eval $(call arc_settings,$(arc_dir)/rtl-settings.json,PYTHON CIRCT_VERILOG ARC_FRONTEND_PATCHES CIRCT_OPT CXX SIM_PREPROC_DEFINES EXT_INCDIRS ARC_RTL_FLAGS ARC_SOURCE_METADATA,$(arc_dir)))
 arc_frontend_sources := $(wildcard $(sim_dir)/compiler/verilog/*.py $(sim_dir)/compiler/verilog/*.patch $(sim_dir)/compiler/verilog/*.json $(sim_dir)/compiler/verilog/CMakeLists.txt)
-$(arc_dir)/rtl-libraries.json: $(arc_dir)/blackboxes.f $(sim_dir)/rtl_libraries.py FORCE
+$(arc_dir)/hdl-inputs.json $(arc_dir)/driver-inputs.json &: $(arc_dir)/blackboxes.f $(sim_dir)/filelists.py FORCE
+	$(PYTHON) $(sim_dir)/filelists.py --filelist=$(arc_dir)/blackboxes.f \
+		--hdl-output=$(arc_dir)/hdl-inputs.json --driver-output=$(arc_dir)/driver-inputs.json
+$(arc_dir)/rtl-libraries.json: $(arc_dir)/blackboxes.f $(sim_dir)/rtl_libraries.py $(sim_dir)/filelists.py FORCE
 	$(PYTHON) $(sim_dir)/rtl_libraries.py --filelist $(arc_dir)/blackboxes.f --root $(base_dir) --output $@
-$(arc_input) $(arc_dir)/rtl.json: $(arc_dir)/rtl-libraries.json $(sim_dir)/rtl_libraries.py
+$(arc_input) $(arc_dir)/rtl.json: $(arc_dir)/rtl-libraries.json $(sim_dir)/rtl_libraries.py $(sim_dir)/filelists.py $(arc_dir)/hdl-inputs.json
 $(arc_input) $(arc_dir)/rtl.json &: $(arc_dir)/design.mlir $(arc_dir)/blackboxes.f $(sim_dir)/native_hw.py $(sim_dir)/native_exports.py $(sim_dir)/native/models.def $(sim_dir)/compiler/RTL.cpp $(sim_dir)/compiler/SignalWrites.cpp $(sim_dir)/compiler/SignalState.cpp $(sim_dir)/compiler/SignalMemory.cpp $(sim_dir)/compiler/NativeHandles.cpp $(sim_dir)/compiler/NativeContexts.cpp $(sim_dir)/compiler/HierarchyFormats.cpp $(sim_dir)/compiler/ScopeFrames.h $(sim_dir)/compiler/NativeStrings.cpp $(sim_dir)/compiler/FormatStrings.cpp $(sim_dir)/compiler/UnionBits.cpp $(sim_dir)/compiler/NativeMem2Reg.cpp $(sim_dir)/compiler/LocalMemory.cpp $(sim_dir)/compiler/partition.py $(arc_frontend_sources) $(arc_dir)/rtl-settings.json
 	$(PYTHON) $(sim_dir)/native_hw.py --input $< --output $(arc_input) \
 		--filelist $(arc_dir)/blackboxes.f --work $(arc_dir)/rtl \
@@ -255,9 +258,9 @@ ARC_LDFLAGS = $(SIM_LDFLAGS) $(ARC_RUNTIME_LIBS)
 # directly. This target does not invoke or link Verilator, including its DPI ABI.
 define arc_native_build
 $$(eval $$(call arc_settings,$(1)/native-build-settings.json,PYTHON CXX CC CIRCT_ROOT SIM_CXXFLAGS ARC_CFLAGS ARC_LDFLAGS,$(1)))
-$(1)/native-main.cpp: $(1)/model.json $(arc_dir)/partition.json $(arc_dir)/blackboxes.f $(arc_dir)/rtl.json $(sim_dir)/native.py $(sim_dir)/native_exports.py
+$(1)/native-main.cpp: $(1)/model.json $(arc_dir)/partition.json $(arc_dir)/blackboxes.f $(arc_dir)/rtl.json $(sim_dir)/native.py $(sim_dir)/native_exports.py $(sim_dir)/filelists.py
 	$(PYTHON) $(sim_dir)/native.py $(1)/model.json $(arc_dir)/partition.json $$@ --filelist=$(arc_dir)/blackboxes.f
-$(2): $(1)/native-main.cpp $(1)/model.o $(arc_dir)/blackboxes.f $(sim_dir)/native_build.py $(wildcard $(sim_dir)/native/*.cpp $(sim_dir)/native/*.h $(sim_dir)/native/*.def $(sim_dir)/native/include/*.h) $(dramsim_lib) $(EXTRA_SIM_REQS) $(1)/native-build-settings.json
+$(2): $(1)/native-main.cpp $(1)/model.o $(arc_dir)/blackboxes.f $(arc_dir)/driver-inputs.json $(sim_dir)/native_build.py $(sim_dir)/filelists.py $(wildcard $(sim_dir)/native/*.cpp $(sim_dir)/native/*.h $(sim_dir)/native/*.def $(sim_dir)/native/include/*.h) $(dramsim_lib) $(EXTRA_SIM_REQS) $(1)/native-build-settings.json
 	$(PYTHON) $(sim_dir)/native_build.py --filelist=$(arc_dir)/blackboxes.f \
 		--main=$(1)/native-main.cpp --model=$(1)/model.o \
 		--output=$$@ --build=$(1)/native-objects --cxx="$(CXX)" --cc="$(CC)" \
@@ -299,7 +302,7 @@ clean-sim-debug:
 	rm -rf $(arc_debug_dir) $(sim_debug)
 
 # Compiled fixtures require no Scala elaboration. The SV comparison is optional.
-.PHONY: test native-test hybrid-test frontend-test llvm-native-test native-vpi-test native-analog-test native-source-metadata-test
+.PHONY: test native-test hybrid-test frontend-test llvm-native-test native-vpi-test native-analog-test native-source-metadata-test native-filelist-test native-jtag-test native-predictor-test native-predictor-model-test native-block-device-test native-network-test native-debug-rob-test native-traffic-test
 test: native-test
 hybrid-test:
 	CIRCT_BIN=$(CIRCT_BIN) VERILATOR=$(VERILATOR) $(PYTHON) $(sim_dir)/tests/run.py
@@ -313,13 +316,29 @@ llvm-native-test:
 	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/large_returns_cfg.py
 	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/large_arguments.py
 	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/compact_structs.py --input=$(sim_dir)/generated-src/large-return-test/input.ll --reference=$(sim_dir)/generated-src/large-return-test/check.cpp
+native-filelist-test:
+	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" CC="$(CC)" $(PYTHON) $(sim_dir)/tests/native_filelists.py --circt-bin=$(CIRCT_BIN)
+native-jtag-test:
+	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/jtag_timing.py --circt-bin=$(CIRCT_BIN)
+native-predictor-test:
+	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/native_predictors.py --circt-bin=$(CIRCT_BIN)
+native-predictor-model-test:
+	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/native_predictor_model.py --circt-bin=$(CIRCT_BIN)
+native-block-device-test:
+	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/native_block_device.py --circt-bin=$(CIRCT_BIN) $(if $(RISCV),--riscv="$(RISCV)")
+native-network-test:
+	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/native_network.py --circt-bin=$(CIRCT_BIN) $(if $(RISCV),--riscv="$(RISCV)")
+native-debug-rob-test:
+	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/native_debug_rob.py --circt-bin=$(CIRCT_BIN)
+native-traffic-test:
+	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" CC="$(CC)" $(PYTHON) $(sim_dir)/tests/native_traffic.py --circt-bin=$(CIRCT_BIN)
 native-vpi-test:
 	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" CC="$(CC)" $(PYTHON) $(sim_dir)/tests/vpi_lifecycle.py
 native-analog-test:
 	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/analog_nets.py --circt-bin=$(CIRCT_BIN)
 native-source-metadata-test:
 	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/vpi_source_metadata.py --circt-bin=$(CIRCT_BIN) --work=$(sim_dir)/generated-src/native-vpi-source-metadata-test $(if $(ARC_SOURCE_METADATA_FRONTEND),--frontend=$(ARC_SOURCE_METADATA_FRONTEND))
-native-test: frontend-test llvm-native-test native-vpi-test native-analog-test native-source-metadata-test
+native-test: frontend-test llvm-native-test native-vpi-test native-analog-test native-source-metadata-test native-filelist-test native-jtag-test native-predictor-test native-predictor-model-test native-block-device-test native-network-test native-debug-rob-test native-traffic-test
 	$(PYTHON) $(sim_dir)/tests/rtl_libraries.py
 	CIRCT_BIN=$(CIRCT_BIN) $(PYTHON) $(sim_dir)/tests/run_native.py
 

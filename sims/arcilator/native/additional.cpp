@@ -67,8 +67,11 @@ class LegacyDTM : public Binding {
   int address = 0, operation = 0, data = 0, exit = 0;
   void schedule(Delayed &signal, uint32_t value) {
     if (value != signal.next) {
+      constexpr uint64_t delay_fs = 100000;
+      if (delay_fs >= never - runtime.time_fs())
+        throw std::runtime_error("native SimDTM delay exceeds time range");
       signal.next = value;
-      signal.at = runtime.time() + 100;
+      signal.at = runtime.time_fs() + delay_fs;
     }
   }
 
@@ -103,7 +106,7 @@ public:
     for (unsigned i = 0; i < outputs.size(); ++i)
       schedule(outputs[i], values[i]);
   }
-  uint64_t next_time() const override {
+  uint64_t next_time_fs() const override {
     uint64_t next = never;
     for (auto &signal : inputs)
       next = std::min(next, signal.at);
@@ -111,14 +114,18 @@ public:
       next = std::min(next, signal.at);
     return next;
   }
+  uint64_t next_time() const override {
+    auto at = next_time_fs();
+    return at == never ? never : at / 1000 + bool(at % 1000);
+  }
   void timed() override {
     for (auto &signal : inputs)
-      if (signal.at == runtime.time()) {
+      if (signal.at == runtime.time_fs()) {
         signal.value = signal.next;
         signal.at = never;
       }
     for (auto &signal : outputs)
-      if (signal.at == runtime.time()) {
+      if (signal.at == runtime.time_fs()) {
         signal.value = signal.next;
         port(signal.name).set(signal.value);
         signal.at = never;

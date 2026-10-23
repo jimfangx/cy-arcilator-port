@@ -89,7 +89,8 @@ public:
       block_device_init(path.c_str(), 1u << tag_bits, &sectors, &length);
       port("bdev_info_nsectors").set(uint32_t(sectors));
       port("bdev_info_max_req_len").set(uint32_t(length));
-    }
+    } else
+      port("bdev_info_nsectors").set(0);
   }
   void sample() override {
     bool clock = get("clock"), edge = clock && !old_clock;

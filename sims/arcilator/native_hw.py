@@ -10,6 +10,8 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+from filelists import source_paths
+
 from partition import IDENT, opcode, split, unquote, svparam, packed_width, svname, width
 from native_exports import contracts
 from rtl_libraries import discover as discover_libraries
@@ -233,8 +235,8 @@ def compile_rtl(args):
             variants.setdefault((symbol, parameters or ''),
                                 f'ArcRTL_{len(variants)}')
     files = [
-        Path(s) for s in shlex.split(args.filelist.read_text(), comments=True)
-        if Path(s).suffix in ('.v', '.sv') and Path(s).stem != 'TestDriver'
+        p for p in source_paths(args.filelist)
+        if p.suffix in ('.v', '.sv') and p.stem != 'TestDriver'
     ]
     library_manifest = getattr(args, 'library_manifest', None)
     libraries = (json.loads(library_manifest.read_text()) if library_manifest
@@ -594,9 +596,9 @@ def compile_rtl(args):
                     p for p in files if p != source], *([native_file] if native else []), boundary]],
                 generated_sources=[describe(path) for path in [
                     *([native_file] if native else []), boundary]],
-                omitted_test_drivers=[describe(Path(path)) for path in shlex.split(
-                    args.filelist.read_text(), comments=True) if
-                    Path(path).suffix in ('.v', '.sv') and Path(path).stem == 'TestDriver'])
+                omitted_test_drivers=[describe(path) for path in source_paths(
+                    args.filelist) if path.suffix in ('.v', '.sv') and
+                    path.stem == 'TestDriver'])
 
     def replace_instance(match):
         prefix, symbol, parameters = match.groups()
@@ -613,8 +615,8 @@ def compile_rtl(args):
         if not needed:
             continue
         support = str(Path(__file__).parent / 'native' / filename)
-        entries = shlex.split(args.filelist.read_text(), comments=True)
-        if support not in entries:
+        entries = set(source_paths(args.filelist))
+        if Path(support) not in entries:
             # The original foreign-driver builder accepts extra C++ sources.
             # Select additive control/format support through the original
             # foreign-driver builder, preserving its existing runtime inputs.

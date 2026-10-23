@@ -12,16 +12,17 @@ import sys
 import tempfile
 
 
-def partition_fixture(generator, sdk, fixture, bits, run):
+def partition_fixture(generator, sdk, fixture, bits, run, literal=-1, parameter_bits=32):
     """Verify real HW syntax and preserve its analog boundary and parameters."""
     source = fixture / 'input.mlir'
     source.write_text(
         'module {\n'
-        '  hw.module.extern @AnalogConst<CONST: i32, WIDTH: i32>'
+        '  hw.module.extern @AnalogConst<CONST: i' + str(parameter_bits) + ', WIDTH: i32>'
         '(in %io: !hw.inout<i' + str(bits) + '>)\n'
         '  hw.module @WideAnalogUnit(in %clock: i1, in %pad: !hw.inout<i' +
         str(bits) + '>) {\n'
-        '    hw.instance "constant" @AnalogConst<CONST: i32 = -1, WIDTH: i32 = ' +
+        '    hw.instance "constant" @AnalogConst<CONST: i' + str(parameter_bits) +
+        ' = ' + str(literal) + ', WIDTH: i32 = ' +
         str(bits) + '>(io: %pad: !hw.inout<i' + str(bits) + '>) -> ()\n'
         '    hw.output\n  }\n}\n')
     verified = fixture / 'verified.mlir'
@@ -37,7 +38,7 @@ def partition_fixture(generator, sdk, fixture, bits, run):
     instance, = part['instances']
     if (instance['module'] != 'AnalogConst' or instance['ports'] != [
             dict(name='io', direction='inout', wire='pad', bits=bits)] or
-            'CONST: i32 = -1' not in instance['parameters'] or
+            ('CONST: i' + str(parameter_bits) + ' = ' + str(literal)) not in instance['parameters'] or
             ('WIDTH: i32 = ' + str(bits)) not in instance['parameters']):
         raise RuntimeError('partition lost analog ports or signed parameters')
     return part
@@ -106,7 +107,7 @@ def main():
         lines = ['struct AnalogCase { unsigned bits; const char *literal;',
                  'std::vector<uint8_t> expected; };',
                  'static const AnalogCase analog_cases[] = {']
-        for bits in [65, 73, 127, 128, 129, 257, 1027]:
+        for bits in [7, 64, 65, 73, 127, 128, 129, 257, 1027]:
             for literal in literals:
                 digits = literal.lstrip('+-')
                 base = 16 if digits.lower().startswith('0x') else (
@@ -139,12 +140,14 @@ def main():
             run('execute-O' + level, [executable])
         # Exercise the original generator and real runtime together; no new
         # hardware config or firmware is introduced by these unit factories.
-        for bits in [65, 73, 257]:
+        for bits, literal, parameter_bits in [(65, -1, 32), (73, -1, 32),
+                (257, -1, 32), (7, (1 << 100) + 5, 128),
+                (64, -((1 << 100) + 0x0123456789abcdef), 128)]:
             fixture = work / ('factory-' + str(bits))
             fixture.mkdir(exist_ok=True)
             layout = [{'name': 'ArcModel', 'numStateBytes': 64, 'states': [
                 dict(name='clock', type='input', offset=0, numBits=1)]}]
-            part = partition_fixture(generator, sdk, fixture, bits, run)
+            part = partition_fixture(generator, sdk, fixture, bits, run, literal, parameter_bits)
             (fixture / 'model.json').write_text(json.dumps(layout))
             (fixture / 'partition.json').write_text(json.dumps(part))
             factory = fixture / 'factory.cpp'
@@ -156,10 +159,14 @@ def main():
                 here / 'analog_factory.cpp', *objects.values(), *libraries,
                 '-o', executable])
             wave = fixture / 'wave.vcd'
-            run('factory-execute-' + str(bits), [executable, '+vcdfile=' + str(wave)])
+            expected = literal % (1 << bits)
+            oracle = fixture / 'expected.bin'
+            oracle.write_bytes(expected.to_bytes((bits + 7) // 8, 'little'))
+            run('factory-execute-' + str(bits), [executable, '+vcdfile=' + str(wave),
+                '+analog-expected-file=' + str(oracle)])
             body = wave.read_text()
-            if ('$var wire ' + str(bits)) not in body or ('b' + '1' * bits + ' ') not in body:
-                raise RuntimeError('wide analog waveform lost width or value')
+            if ('$var wire ' + str(bits)) not in body or ('b' + format(expected, '0' + str(bits) + 'b') + ' ') not in body:
+                raise RuntimeError('analog waveform lost width or value')
         # Reuse existing tests against these same newly compiled objects.
         for name, source, flags in [
             ('vpi', 'native_vpi_lifecycle.cpp',
@@ -178,7 +185,9 @@ def main():
         sys.path.insert(0, str(generator / 'tests'))
         from run_loop import check
         check(waves)
-        report['status'] = 'passed'
+        report.update(status='passed', constant_cases=len(literals) * 9,
+                      narrow_constant_cases=len(literals) * 2, generated_factories=5,
+                      generated_narrow_wide_parameter_factories=2)
     except BaseException as error:
         report['status'] = 'failed'
         report['error'] = str(error)
