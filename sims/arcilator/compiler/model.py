@@ -19,6 +19,12 @@ def boolean(value):
 
 def compile_model(args):
     late_wide = getattr(args, 'late_wide_arithmetic', True)
+    state_partitioning = getattr(args, 'state_partitioning', False)
+    state_report = getattr(args, 'state_partition_report', None)
+    if state_partitioning:
+        state_report = state_report or args.output.with_suffix(
+            '.state-partition.json')
+        state_report.parent.mkdir(parents=True, exist_ok=True)
     flags = args.flags[1:] if args.flags[:1] == ['--'] else args.flags
     # Arcilator validates the complete option list. Mirror options whose
     # effects belong to the stages resumed below, including explicit false.
@@ -90,6 +96,12 @@ def compile_model(args):
         wide = plugin(args.circt_opt, args.cxx, args.cache,
                       Path(__file__).with_name('WideArithmetic.cpp'))
         wide_load = ['--load-pass-plugin=' + str(wide)]
+    state_load = []
+    if state_partitioning:
+        state_partition = plugin(
+            args.circt_opt, args.cxx, args.cache,
+            Path(__file__).with_name('StatePartition.cpp'))
+        state_load = ['--load-pass-plugin=' + str(state_partition)]
 
     def run(*command):
         subprocess.run([str(value) for value in command], check=True)
@@ -98,7 +110,8 @@ def compile_model(args):
         run(args.circt_opt, work / source, load, load_convergence,
             load_sampling, load_idle, load_arrays, load_properties, load_i0,
             load_compact, load_plusargs, load_formats, load_arc_llvm, load_startup,
-            *wide_load, '--pass-pipeline=builtin.module(' + pipeline + ')',
+            *wide_load, *state_load,
+            '--pass-pipeline=builtin.module(' + pipeline + ')',
             '--emit-bytecode', '-o', work / target)
 
     # The stock state-allocation pipeline removes singleton arrays without
@@ -156,8 +169,13 @@ def compile_model(args):
         optimize.append('arc-make-tables')
     optimize += [
         'cse', 'arc-canonicalizer', 'chipyard-record-time-dependencies',
-        startup_state, 'chipyard-freeze-combinational-dpi'
+        startup_state
     ]
+    if state_partitioning:
+        plan_report = state_report.with_suffix('.plan.json')
+        optimize.append('chipyard-state-partition-plan{report-file=' +
+                        json.dumps(str(plan_report.resolve())) + '}')
+    optimize.append('chipyard-freeze-combinational-dpi')
     if lower.inline:
         optimize.append('arc-inline')
     optimize += [
@@ -202,7 +220,12 @@ def compile_model(args):
         json.dumps(str(args.state_file.resolve())) + '}')
     transform('state.mlir', 'allocated.mlirbc', pipeline)
 
-    pipeline = [] if lower.no_generate_driver else ['arc-generate-driver']
+    pipeline = []
+    if state_partitioning:
+        pipeline.append('chipyard-state-partition-materialize{report-file=' +
+                        json.dumps(str(state_report.resolve())) + '}')
+    if not lower.no_generate_driver:
+        pipeline.append('arc-generate-driver')
     pipeline.append('hw-convert-bitcasts{allow-partial-conversion=false}')
     if not lower.no_runtime:
         extra = lower.extra_runtime_args
@@ -256,6 +279,12 @@ def main():
     parser.add_argument('--output-convergence', type=boolean, default=True)
     parser.add_argument('--idle-clocks', type=boolean, default=True)
     parser.add_argument('--stable-evaluator', type=boolean, default=True)
+    parser.add_argument(
+        '--state-partitioning', type=boolean, default=False,
+        help='plan state versions before allocation and outline proven regions')
+    parser.add_argument(
+        '--state-partition-report', type=Path,
+        help='write state-version partition decisions when partitioning is enabled')
     parser.add_argument(
         '--late-wide-arithmetic',
         type=boolean,

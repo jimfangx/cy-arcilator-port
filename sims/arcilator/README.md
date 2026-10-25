@@ -41,6 +41,51 @@ compile-time target. Broader configuration qualification remains open. Evidence
 and retained experimental results are in
 `output/development/native-compile-integration416-20261024T224229Z/`.
 
+## Experimental state-aware partitioning
+
+`ARC_STATE_PARTITIONING=1` enables an experimental two-stage model pass. It
+records explicit state-object identities before allocation, then checks exact
+storage ranges, intervening writes and opaque effects before outlining pure
+regions after allocation. An old state value is passed as a snapshot whenever
+the compiler cannot prove that reloading it at the helper call observes the
+same version. Array aliases, unknown effects and unsupported boundaries retain
+their original handling. State allocation order, physical layout, clocks and
+foreign callbacks remain in the model.
+
+The setting defaults to `0` and participates in model and codegen cache keys.
+Enabled builds write `state-partition-report.json` and
+`state-partition-report.plan.json` beside the model. With
+`ARC_CODEGEN_PIPELINE=stock`, the setting also permits independent optimized
+functions to compile concurrently, without adding bounded-CFG transformations.
+Whole-module LLVM optimization still precedes this backend partitioning.
+
+This is an implementation under qualification, not a demonstrated build-time
+or runtime improvement across configurations. Unsupported regions remain
+unsplit. Keep the default setting for qualified performance results until a
+complete build and runtime comparison establishes a useful improvement.
+
+The first Rocket implementation creates two helpers containing 614 operations.
+One helper co-locates 535 operations and two scalar state writes behind six
+input words. Independent O0/O3 tests cover old/new versions, derived clocks,
+opaque callback mutations, array/partial aliases, and conditional void writers.
+Removing either the actual write-version or opaque-effect guard is detected.
+Run these fixtures with `make native-state-partition-test` using the matching
+CIRCT SDK.
+
+The current Rocket pilot preserves the complete model metadata, current/staged
+state bytes, original program logs/cycles and ten SDK/model/binding counters on
+Dhrystone and Towers. Balanced runtime checks with both existing and fresh
+matched host objects found no regression. One fresh complete-build pair with
+16 CPUs and warm dependencies took 58.00 seconds with the setting off and
+57.38 seconds with it on; this small single-pair difference is not a robust
+compile-time speedup claim. The pilot uses stock O3, no generic model outlining,
+no shared-procedure/large-ABI buffer transforms, and native host CPU targeting.
+
+This stage preserves operation order within contiguous proven scalar-state
+regions. It does not yet implement global producer co-location, scheduling
+across state overwrites, or a solution to the remaining dominant evaluator's
+compile-time concentration.
+
 ## Native callback schedules
 
 The runtime builds ordered lists for combinational, sampling and timed binding

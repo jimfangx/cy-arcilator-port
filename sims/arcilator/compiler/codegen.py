@@ -42,21 +42,21 @@ def parallel_codegen(bitcode, output, llvm_opt, llc, cache, cxx, library,
     def compile_part(part):
         started = time.monotonic()
         source = parts / part['file']
-        bounded = source.with_suffix('.bounded.bc')
+        lowered = source
         obj = source.with_suffix('.o')
         # Block-address tables must be introduced after partitioning: a shared
         # table would otherwise force all its functions into the same object.
-        subprocess.run([
-            str(llvm_opt), '-load-pass-plugin=' + str(library),
-            '-passes=chipyard-bound-codegen-blocks,verify',
-            str(source), '-o',
-            str(bounded)
-        ],
-                       check=True)
+        if library is not None:
+            lowered = source.with_suffix('.bounded.bc')
+            subprocess.run([
+                str(llvm_opt), '-load-pass-plugin=' + str(library),
+                '-passes=chipyard-bound-codegen-blocks,verify',
+                str(source), '-o', str(lowered)
+            ], check=True)
         subprocess.run([
             str(llc), '-O' + opt_level, '-relocation-model=pic',
             '-filetype=obj',
-            str(bounded), '-o',
+            str(lowered), '-o',
             str(obj)
         ],
                        check=True)
@@ -115,7 +115,8 @@ def compile_model(source,
                   pipeline='bounded',
                   opt_flags='',
                   distribute_wide_stores=False,
-                  vector_packing=False):
+                  vector_packing=False,
+                  parallel_stock=False):
     if jobs < 1:
         raise ValueError('jobs must be positive')
     if pipeline not in ('bounded', 'stock'):
@@ -128,7 +129,7 @@ def compile_model(source,
     output.parent.mkdir(parents=True, exist_ok=True)
     bitcode.parent.mkdir(parents=True, exist_ok=True)
     requested_jobs = jobs
-    if pipeline == 'stock':
+    if pipeline == 'stock' and not parallel_stock:
         jobs = 1
     libraries = []
     library = None
@@ -191,6 +192,7 @@ def compile_model(source,
         'jobs': jobs,
         'requested_jobs': requested_jobs,
         'pipeline': pipeline,
+        'parallel_stock': parallel_stock,
         'abi_buffers': abi_buffers,
         'distribute_wide_stores': distribute_wide_stores,
         'vector_packing': vector_packing,
@@ -263,6 +265,10 @@ def main():
                         default='bounded',
                         help='bounded native passes or stock LLVM codegen')
     parser.add_argument(
+        '--parallel-stock',
+        action='store_true',
+        help='compile independent optimized stock LLVM functions concurrently')
+    parser.add_argument(
         '--opt-flags',
         default='',
         help='extra opt arguments, including host target/CPU controls')
@@ -298,7 +304,8 @@ def main():
                       pipeline=args.pipeline,
                       opt_flags=args.opt_flags,
                       distribute_wide_stores=args.distribute_wide_stores,
-                      vector_packing=args.vector_packing)
+                      vector_packing=args.vector_packing,
+                      parallel_stock=args.parallel_stock)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.exit(1, f'Native LLVM code generation: {error}\n')
 

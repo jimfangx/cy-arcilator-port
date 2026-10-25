@@ -66,6 +66,12 @@ ARC_ABI_BUFFERS ?= 1
 ARC_EARLY_INLINE ?= 1
 ARC_LATE_WIDE_ARITHMETIC ?= 1
 ARC_CODEGEN_PIPELINE ?= bounded
+ARC_STATE_PARTITIONING ?= 0
+ifneq ($(ARC_STATE_PARTITIONING),0)
+ifneq ($(ARC_STATE_PARTITIONING),1)
+$(error ARC_STATE_PARTITIONING must be 0 or 1)
+endif
+endif
 ARC_DISTRIBUTE_WIDE_STORES ?= 0
 ARC_VECTOR_PACKING ?= 0
 ifneq ($(ARC_VECTOR_PACKING),0)
@@ -146,6 +152,7 @@ HELP_COMPILATION_VARIABLES += \
 "   ARC_EARLY_INLINE       = inline forwarding expressions before arithmetic ABI lowering, 0 or 1 [$(ARC_EARLY_INLINE)]" \
 "   ARC_LATE_WIDE_ARITHMETIC = retain pure wide shifts through Arc optimization, 0 or 1 [$(ARC_LATE_WIDE_ARITHMETIC)]" \
 "   ARC_CODEGEN_PIPELINE   = bounded native passes or stock LLVM codegen [$(ARC_CODEGEN_PIPELINE)]" \
+"   ARC_STATE_PARTITIONING = outline state-version-safe model regions, 0 or 1 [$(ARC_STATE_PARTITIONING)]" \
 "   ARC_DISTRIBUTE_WIDE_STORES = distribute closed wide stores over CFG edges, 0 or 1 [$(ARC_DISTRIBUTE_WIDE_STORES)]" \
 "   ARC_VECTOR_PACKING     = use target-legal vectors for pure integer packing DAGs, 0 or 1 [$(ARC_VECTOR_PACKING)]" \
 "   ARC_OUTPUT_CONVERGENCE = use compiler-certified write-only outputs in native settling, 0 or 1 [$(ARC_OUTPUT_CONVERGENCE)]" \
@@ -217,12 +224,12 @@ $(arc_dir)/model.mlir $(arc_dir)/ArcHarness.sv $(arc_dir)/partition.json &: $(ar
 # Separate debug compilation keeps observation and waveform instrumentation out
 # of the optimized normal model.
 define arc_compile
-$$(eval $$(call arc_settings,$(1)/model-settings.json,PYTHON ARCILATOR CIRCT_OPT MLIR_TRANSLATE LLVM_OPT CXX ARC_MODEL_OPS ARC_SHARED_PROCEDURES ARC_ABI_BUFFERS ARC_EARLY_INLINE ARC_LATE_WIDE_ARITHMETIC ARC_OUTPUT_CONVERGENCE ARC_IDLE_CLOCKS ARC_STABLE_EVALUATOR ARC_PARTITION_PORTS ARCILATOR_FLAGS,$(1)))
-$$(eval $$(call arc_settings,$(1)/codegen-settings.json,PYTHON LLVM_OPT LLC CXX ARC_OPT_LEVEL ARC_LLC_OPT_LEVEL ARC_ABI_BUFFERS ARC_CODEGEN_PIPELINE ARC_DISTRIBUTE_WIDE_STORES ARC_VECTOR_PACKING ARC_OPT_FLAGS,$(1)))
-$(1)/model.ll $(1)/model.json &: $(arc_dir)/model.mlir $(sim_dir)/compiler/model.py $(sim_dir)/compiler/Model.cpp $(sim_dir)/compiler/StartupState.cpp $(sim_dir)/compiler/WideArithmetic.cpp $(sim_dir)/compiler/WideArithmetic.h $(sim_dir)/compiler/SamplingFreeze.cpp $(sim_dir)/compiler/Convergence.cpp $(sim_dir)/compiler/IdleClock.cpp $(sim_dir)/compiler/ArcToLLVM.cpp $(sim_dir)/compiler/FloatMath.cpp $(sim_dir)/compiler/FormatStrings.cpp $(sim_dir)/compiler/NativePlusArgs.cpp $(sim_dir)/compiler/StateProperties.cpp $(sim_dir)/compiler/LowerArrays.cpp $(sim_dir)/compiler/RemoveI0Types.cpp $(sim_dir)/compiler/CompactStructs.cpp $(sim_dir)/compiler/partition.py $(sim_dir)/compiler/llvm.py $(if $(filter 1,$(ARC_SHARED_PROCEDURES)),$(sim_dir)/compiler/SharedProcedures.cpp) $(sim_dir)/compiler/LargeReturns.cpp $(sim_dir)/compiler/LargeArguments.cpp $(1)/model-settings.json $(if $(filter native,$(ARC_RUNTIME)),$(arc_dir)/partition.json) | $(1)
+$$(eval $$(call arc_settings,$(1)/model-settings.json,PYTHON ARCILATOR CIRCT_OPT MLIR_TRANSLATE LLVM_OPT CXX ARC_MODEL_OPS ARC_SHARED_PROCEDURES ARC_ABI_BUFFERS ARC_EARLY_INLINE ARC_LATE_WIDE_ARITHMETIC ARC_OUTPUT_CONVERGENCE ARC_IDLE_CLOCKS ARC_STABLE_EVALUATOR ARC_STATE_PARTITIONING ARC_PARTITION_PORTS ARCILATOR_FLAGS,$(1)))
+$$(eval $$(call arc_settings,$(1)/codegen-settings.json,PYTHON LLVM_OPT LLC CXX ARC_OPT_LEVEL ARC_LLC_OPT_LEVEL ARC_ABI_BUFFERS ARC_CODEGEN_PIPELINE ARC_DISTRIBUTE_WIDE_STORES ARC_VECTOR_PACKING ARC_STATE_PARTITIONING ARC_OPT_FLAGS,$(1)))
+$(1)/model.ll $(1)/model.json &: $(arc_dir)/model.mlir $(sim_dir)/compiler/model.py $(sim_dir)/compiler/Model.cpp $(sim_dir)/compiler/StartupState.cpp $(sim_dir)/compiler/WideArithmetic.cpp $(sim_dir)/compiler/WideArithmetic.h $(sim_dir)/compiler/SamplingFreeze.cpp $(sim_dir)/compiler/Convergence.cpp $(sim_dir)/compiler/IdleClock.cpp $(sim_dir)/compiler/ArcToLLVM.cpp $(sim_dir)/compiler/FloatMath.cpp $(sim_dir)/compiler/FormatStrings.cpp $(sim_dir)/compiler/NativePlusArgs.cpp $(sim_dir)/compiler/StateProperties.cpp $(sim_dir)/compiler/LowerArrays.cpp $(sim_dir)/compiler/RemoveI0Types.cpp $(sim_dir)/compiler/CompactStructs.cpp $(if $(filter 1,$(ARC_STATE_PARTITIONING)),$(sim_dir)/compiler/StatePartition.cpp) $(sim_dir)/compiler/partition.py $(sim_dir)/compiler/llvm.py $(if $(filter 1,$(ARC_SHARED_PROCEDURES)),$(sim_dir)/compiler/SharedProcedures.cpp) $(sim_dir)/compiler/LargeReturns.cpp $(sim_dir)/compiler/LargeArguments.cpp $(1)/model-settings.json $(if $(filter native,$(ARC_RUNTIME)),$(arc_dir)/partition.json) | $(1)
 	$(PYTHON) $(sim_dir)/compiler/model.py --input=$$< --state-file=$(1)/model.json.tmp --output=$(1)/model.ll.tmp \
 		--arcilator=$(ARCILATOR) --circt-opt=$(CIRCT_OPT) --mlir-translate=$(MLIR_TRANSLATE) \
-		--cache=$(gen_dir)/compiler --cxx="$(CXX)" --max-ops=$(ARC_MODEL_OPS) --max-ports=$(ARC_PARTITION_PORTS) --output-convergence=$(if $(filter 1,$(ARC_OUTPUT_CONVERGENCE)),true,false) --idle-clocks=$(if $(filter 1,$(ARC_IDLE_CLOCKS)),true,false) --stable-evaluator=$(if $(filter 1,$(ARC_STABLE_EVALUATOR)),true,false) --late-wide-arithmetic=$(if $(filter 1,$(ARC_LATE_WIDE_ARITHMETIC)),true,false) $(if $(filter native,$(ARC_RUNTIME)),--partition=$(arc_dir)/partition.json) \
+		--cache=$(gen_dir)/compiler --cxx="$(CXX)" --max-ops=$(ARC_MODEL_OPS) --max-ports=$(ARC_PARTITION_PORTS) --output-convergence=$(if $(filter 1,$(ARC_OUTPUT_CONVERGENCE)),true,false) --idle-clocks=$(if $(filter 1,$(ARC_IDLE_CLOCKS)),true,false) --stable-evaluator=$(if $(filter 1,$(ARC_STABLE_EVALUATOR)),true,false) --late-wide-arithmetic=$(if $(filter 1,$(ARC_LATE_WIDE_ARITHMETIC)),true,false) --state-partitioning=$(if $(filter 1,$(ARC_STATE_PARTITIONING)),true,false) $(if $(filter 1,$(ARC_STATE_PARTITIONING)),--state-partition-report=$(1)/state-partition-report.json) $(if $(filter native,$(ARC_RUNTIME)),--partition=$(arc_dir)/partition.json) \
 		-- $(ARCILATOR_FLAGS) $(2)
 	$(PYTHON) $(sim_dir)/compiler/llvm.py $(1)/model.ll.tmp --llvm-opt=$(LLVM_OPT) --cache=$(gen_dir)/compiler --cxx="$(CXX)" $(if $(filter 1,$(ARC_SHARED_PROCEDURES)),--share-procedures,--no-share-procedures) $(if $(filter 0,$(ARC_ABI_BUFFERS)),--no-abi-buffers) $(if $(filter 0,$(ARC_EARLY_INLINE)),--no-early-inline)
 	mv $(1)/model.json.tmp $(1)/model.json
@@ -230,7 +237,7 @@ $(1)/model.ll $(1)/model.json &: $(arc_dir)/model.mlir $(sim_dir)/compiler/model
 $(1)/model.o: $(1)/model.ll $(1)/codegen-settings.json $(sim_dir)/compiler/codegen.py $(sim_dir)/compiler/Codegen.cpp $(sim_dir)/compiler/AggregateStores.cpp $(sim_dir)/compiler/SplitCodegen.cpp $(sim_dir)/compiler/LargeReturns.cpp $(sim_dir)/compiler/LargeArguments.cpp $(sim_dir)/compiler/partition.py $(if $(filter 1,$(ARC_DISTRIBUTE_WIDE_STORES)),$(sim_dir)/compiler/WideStores.cpp) $(if $(filter 1,$(ARC_VECTOR_PACKING)),$(sim_dir)/compiler/VectorPacking.cpp)
 	$(PYTHON) $(sim_dir)/compiler/codegen.py --input=$$< --output=$$@ --bitcode=$(1)/model.bc \
 		--llvm-opt=$(LLVM_OPT) --llc=$(LLC) --cache=$(gen_dir)/compiler --cxx="$(CXX)" \
-		--opt-level=$(ARC_OPT_LEVEL) --opt-flags=$(call arc_shell_quote,$(ARC_OPT_FLAGS)) --llc-opt-level=$(ARC_LLC_OPT_LEVEL) --jobs=$(ARC_BUILD_JOBS) --pipeline=$(ARC_CODEGEN_PIPELINE) $(if $(filter 0,$(ARC_ABI_BUFFERS)),--no-abi-buffers) $(if $(filter 1,$(ARC_DISTRIBUTE_WIDE_STORES)),--distribute-wide-stores) $(if $(filter 1,$(ARC_VECTOR_PACKING)),--vector-packing) \
+		--opt-level=$(ARC_OPT_LEVEL) --opt-flags=$(call arc_shell_quote,$(ARC_OPT_FLAGS)) --llc-opt-level=$(ARC_LLC_OPT_LEVEL) --jobs=$(ARC_BUILD_JOBS) --pipeline=$(ARC_CODEGEN_PIPELINE) $(if $(filter 1,$(ARC_STATE_PARTITIONING)),--parallel-stock) $(if $(filter 0,$(ARC_ABI_BUFFERS)),--no-abi-buffers) $(if $(filter 1,$(ARC_DISTRIBUTE_WIDE_STORES)),--distribute-wide-stores) $(if $(filter 1,$(ARC_VECTOR_PACKING)),--vector-packing) \
 		--report=$(1)/codegen-report.json
 $(1)/adapter.cpp: $(1)/model.json $(arc_dir)/partition.json $(sim_dir)/adapter.py $(sim_dir)/trace.h
 	$(PYTHON) $(sim_dir)/adapter.py $$< $(arc_dir)/partition.json $$@
@@ -316,6 +323,9 @@ hybrid-test:
 	CIRCT_BIN=$(CIRCT_BIN) VERILATOR=$(VERILATOR) $(PYTHON) $(sim_dir)/tests/run.py
 frontend-test:
 	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/frontend_compat.py --circt-bin=$(CIRCT_BIN)
+.PHONY: native-state-partition-test
+native-state-partition-test:
+	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/state_partition.py --circt-bin=$(CIRCT_BIN)
 llvm-native-test:
 	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/codegen.py
 	CIRCT_BIN=$(CIRCT_BIN) CXX="$(CXX)" $(PYTHON) $(sim_dir)/tests/compiler_modes.py
