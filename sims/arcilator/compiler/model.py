@@ -49,6 +49,9 @@ def compile_model(args):
     library = plugin(args.circt_opt, args.cxx, args.cache,
                      Path(__file__).with_name('Model.cpp'))
     load = '--load-pass-plugin=' + str(library)
+    startup = plugin(args.circt_opt, args.cxx, args.cache,
+                     Path(__file__).with_name('StartupState.cpp'))
+    load_startup = '--load-pass-plugin=' + str(startup)
     convergence = plugin(args.circt_opt, args.cxx, args.cache,
                          Path(__file__).with_name('Convergence.cpp'))
     load_convergence = '--load-pass-plugin=' + str(convergence)
@@ -94,7 +97,7 @@ def compile_model(args):
     def transform(source, target, pipeline):
         run(args.circt_opt, work / source, load, load_convergence,
             load_sampling, load_idle, load_arrays, load_properties, load_i0,
-            load_compact, load_plusargs, load_formats, load_arc_llvm,
+            load_compact, load_plusargs, load_formats, load_arc_llvm, load_startup,
             *wide_load, '--pass-pipeline=builtin.module(' + pipeline + ')',
             '--emit-bytecode', '-o', work / target)
 
@@ -122,7 +125,25 @@ def compile_model(args):
     run(args.arcilator, work / 'imports.mlirbc', *flags,
         '--until-after=arc-conv', '--emit-mlir', '-o',
         work / 'converted.mlirbc')
-    optimize = ['chipyard-lower-procedural-dpi', 'arc-split-loops']
+    startup_inputs = []
+    if args.partition is not None:
+        scope_part = json.loads(args.partition.read_text())
+        for instance in scope_part['instances']:
+            if instance['module'] not in ('ArcDpiScope', 'ArcDpiScopeRoot', 'ArcSignalMemory'):
+                continue
+            if instance['module'] == 'ArcSignalMemory':
+                port = next(p for p in instance['ports'] if p['name'] == 'handle')
+            else:
+                port, = instance['ports']
+            if (port['name'] != ('handle' if instance['module'] == 'ArcSignalMemory' else 'scope') or port['direction'] != 'out' or
+                    port['bits'] != 64 or
+                    not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', port['wire']) or
+                    port['wire'] in startup_inputs):
+                raise ValueError('invalid native initialized input contract')
+            startup_inputs.append(port['wire'])
+    startup_state = 'chipyard-lower-native-startup-state{initialized-inputs=' + ':'.join(startup_inputs) + '}'
+    optimize = ['chipyard-inline-immutable-arcs',
+                'chipyard-lower-procedural-dpi', 'arc-split-loops']
     if lower.dedup:
         optimize.append('arc-dedup')
     optimize += [
@@ -135,7 +156,7 @@ def compile_model(args):
         optimize.append('arc-make-tables')
     optimize += [
         'cse', 'arc-canonicalizer', 'chipyard-record-time-dependencies',
-        'arc-lower-state', 'chipyard-freeze-combinational-dpi'
+        startup_state, 'chipyard-freeze-combinational-dpi'
     ]
     if lower.inline:
         optimize.append('arc-inline')

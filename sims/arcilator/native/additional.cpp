@@ -237,7 +237,9 @@ public:
     initialize_lanes();
     require(memtrace_init, "memory trace");
     require(memtrace_query, "memory trace");
-    memtrace_init(text("FILENAME", "undefined").c_str(), number("HAS_SOURCE"));
+    // The SV import takes a bit, so truncate before converting to C++ bool.
+    memtrace_init(text("FILENAME", "undefined").c_str(),
+                  number("HAS_SOURCE") & 1);
   }
   void sample() override {
     bool clock = get("clock"), edge = clock && !old_clock;
@@ -277,7 +279,8 @@ public:
     initialize_lanes();
     require(memtracelogger_init, "memory trace logger");
     require(memtracelogger_log, "memory trace logger");
-    handle = memtracelogger_init(number("IS_RESPONSE"),
+    // The original C++ function uses int for the SV import's bit argument.
+    handle = memtracelogger_init(number("IS_RESPONSE") & 1,
                                  text("FILENAME_BASE", "undefined").c_str(),
                                  text("FILENAME_SUFFIX", ".log").c_str());
   }

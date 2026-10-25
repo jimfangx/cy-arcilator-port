@@ -8,6 +8,39 @@ preprocessed source, contains its own `VERILATOR` compatibility guards. Native
 model bindings call the original selected C/C++ device
 drivers through the DPI interfaces those drivers already expose.
 
+Native C/C++ compilation overlaps LLVM model compilation and shares the outer
+`make -j` jobserver. Without an outer parallel jobserver, it uses
+`ARC_BUILD_JOBS`. Compiler-generated dependency files track included headers;
+source edits rebuild the affected objects, model-only changes relink, and
+unchanged builds reuse objects. The standalone `native_build.py` one-shot
+compile/link interface remains available.
+
+Native416 checks this build graph on the original full Rocket/Shuttle release
+models and all ten original foreign drivers per model. With 16 available CPUs,
+warm compiler/library dependencies and fresh SV, models and objects, complete
+builds from the original shared FIRRTL took these seconds:
+
+| Original config | Arcilator, two runs | Verilator 5.022, two runs |
+| --- | --- | --- |
+| RocketConfig | 56.23, 56.43 | 56.84, 57.23 |
+| ShuttleConfig | 62.24, 62.44 | 56.04, 60.64 |
+
+The prior native build took 58.05/64.44 seconds respectively. Common Scala
+elaboration is separate: 6.61/6.81 seconds from warm Scala dependencies. Cached
+main builds take 0.60 seconds. Model bitcode, objects, full metadata and generated
+bindings match the qualified402 model; rebuilding at the original source paths
+also reproduces all 30 native objects and the complete executables byte for byte.
+The incremental-build regression covers real C/C++ drivers, source/header/flag
+changes, quoted paths, cached builds and failed-compilation output preservation.
+
+The default LLVM pipeline and runtime remain unchanged. Experimental pass
+omissions were rejected when full fresh-build runtime checks found regressions;
+their faster compile numbers describe archived experiments. The measured
+Rocket builds beat the measured reference, while Shuttle still misses the
+compile-time target. Broader configuration qualification remains open. Evidence
+and retained experimental results are in
+`output/development/native-compile-integration416-20261024T224229Z/`.
+
 ## Native callback schedules
 
 The runtime builds ordered lists for combinational, sampling and timed binding
@@ -2197,6 +2230,84 @@ truncated cycles and clearing retained ingress payload during reset. This uses
 the original random-traffic path; netrace file playback is not covered. It builds
 no firmware or hardware configuration.
 
+`make native-clock-test` extracts the original inline clock sources from Rocket
+Chip and Chipyard. It imports Rocket Chip's fixed clock as RTL and connects the
+harness and plusarg clock bindings through the compiled native model. O0/O3
+checks distinguish assignment-delay sampling from delay-before-assignment
+sampling while power and gate change between edges, including fractional
+picosecond input times. Default and overridden frequencies, all clock levels,
+peer register counts and complete event traces are checked just before, at and
+after deadlines. Fault controls move the original assignment delay and ignore
+the native clock gate; both must fail. It builds no firmware or configuration.
+
+`make native-memtrace-test` compiles the Radiance trace reader/logger bindings
+with their original C++ drivers. The initialization parameters are narrowed to
+the declared DPI `bit` inputs: `HAS_SOURCE=2` selects no source column, while
+`IS_RESPONSE=3` passes one to the logger. O0/O3 checks cover both file formats,
+three packed lanes, full 64-bit cycles/addresses/data, stalled reads, reset
+retention, EOF and logger cycle reset. Independent oracles compare every output
+and logger-file byte. Fault controls restore either flag-conversion bug, ignore
+read stalls or reverse lane order; all must fail. It builds no firmware or
+hardware configuration.
+
+`make native-declaration-dpi-test` imports and compiles read-only declaration
+initializers containing context-free DPI function calls. Closed dependency graphs
+run once before time-zero processes, preserve callback order and share results
+without repeating effects. Frontend provenance retains initialization when an
+unused declaration is removed. O0/O3 tests check 64-bit values, dependent `chandle`
+calls, unused effects, independent instances, model recreation, and every output
+byte across clock, reset and held evaluations. Ordinary initial and clocked DPI
+calls retain their execution points. Duplicate-callback and wrong-observer faults
+must fail. `tests/signal_initializers.py` retains diagnostics for input-dependent,
+unbound contextual, task, cyclic, escaping and effect-reordering cases. The
+standalone snapshot pass also rejects writable DPI values when native storage
+lowering is not enabled.
+
+`make native-context-declaration-dpi-test` extends declaration initialization to
+bound contextual DPI functions. Native scope binding outputs are initialized
+before the model's startup function and can be captured there. The compiler
+checks their provider, width, use and partition contracts, then lets the matching
+SDK lower state with normal verification. Ordinary model inputs retain their
+startup diagnostics. O0/O3 tests cover local and package scopes, exported SV
+state read and written during initialization, scope selection and restoration,
+user data, registry cleanup and model recreation. Complete output traces match;
+a fault that swaps physical scope bindings must fail. No runtime change is
+needed for these startup captures.
+
+`make native-writable-declaration-dpi-test` checks declaration DPI values that
+subsequent RTL or exported SV functions can modify. The compiler writes each
+initializer result into native signal storage before dependent callbacks run.
+A later initializer resamples that storage after an intervening callback writes
+it through an SV export. Native scope and memory-handle inputs are checked
+against their initialized binding providers before SDK state lowering; ordinary
+model inputs remain unsupported startup dependencies. O0/O3 tests cover full
+64-bit values, 129-bit word chunks, synchronous updates, asynchronous reset
+pulses, context restoration, and independent model recreation. Every output byte
+matches an independent trace oracle. Fault controls detect duplicate callbacks,
+wrong observer data, swapped scopes, omitted startup writes, and stale reads.
+This supports closed, straight-line declaration dependency graphs; general
+runtime initialization and cyclic or input-dependent graphs remain open.
+
+`make native-global-declaration-dpi-test` checks closed package/global
+initializers containing context-free DPI functions. Global values use the same
+shared native allocation in every imported specialization and physical instance.
+Each allocation claims its initializer once per model. The complete expression
+and its assignment run under that claim before module declaration startup;
+skipped instances execute neither callbacks nor floating calculations. Shared
+keys also validate an initializer fingerprint, so conflicting definitions cannot
+silently select whichever instance initializes first. Dependency cycles,
+callback reordering, unbound context, tasks and unsupported effects retain
+diagnostics. Structured startup regions keep their single-block form until SDK
+state lowering; ordinary procedural SCF uses the matching SDK conversion rules.
+
+O0/O3 tests compare every byte of three-instance traces over shared writes,
+held events and two model recreations. They cover dependent globals, slices of
+129-bit storage, real and shortreal values, module startup after global startup,
+and unused initializer effects. A floating exception check detects evaluation
+of a skipped initializer. Six faults break claims, assignments, the final
+partial word, sharing, fingerprints or observer data; all must be detected.
+Contextual global DPI and general conditional/runtime startup remain open.
+
 Asynchronous registers are grouped by clock/reset into banks of at most 1,024
 bits. The native binding samples both clock and asynchronous-reset edges.
 Registers wider than a bank are split and reassembled with their exact reset
@@ -3050,7 +3161,10 @@ The shared-global results are frozen in
 All 49 native fixtures, five frontend suites, original Ara helper checks, the
 original AES driver and seven full-system integration cases pass on this
 implementation. At that checkpoint, full Ara still stopped at its three
-exported SRAM APIs. Nonconstant declaration initialization remains unsupported.
+exported SRAM APIs. General nonconstant declaration initialization remains incomplete. Closed DPI
+declaration graphs, including verified native context scopes and writable
+native storage, are supported as described above. Closed package/global
+initializers with context-free DPI functions are also supported there.
 
 The native importer now compiles integral, string, real, shortreal, and scalar
 realtime DPI exported functions

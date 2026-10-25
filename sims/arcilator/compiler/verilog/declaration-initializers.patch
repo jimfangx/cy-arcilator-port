@@ -1,0 +1,56 @@
+--- a/ImportVerilog.cpp
++++ b/ImportVerilog.cpp
+@@ -613,8 +613,38 @@
+ // Pass Pipeline
+ //===----------------------------------------------------------------------===//
+ 
++namespace {
++// A dead declaration can lose its VariableOp during canonicalization while its
++// effectful DPI initializer survives. Remember that execution belongs to static
++// initialization before either Moore or LLHD cleanup removes the storage.
++struct RememberDeclarationDPI
++    : PassWrapper<RememberDeclarationDPI, OperationPass<ModuleOp>> {
++  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(RememberDeclarationDPI)
++  void runOnOperation() override {
++    getOperation().walk([&](moore::VariableOp variable) {
++      if (!isa<moore::SVModuleOp>(variable->getParentOp()) ||
++          !variable.getInitial())
++        return;
++      SmallVector<Value> pending{variable.getInitial()};
++      DenseSet<Operation *> seen;
++      while (!pending.empty()) {
++        auto *op = pending.pop_back_val().getDefiningOp();
++        if (!op || op->getBlock() != variable->getBlock() ||
++            isa<moore::VariableOp>(op) || !seen.insert(op).second)
++          continue;
++        if (isa<moore::FuncDPICallOp>(op))
++          op->setAttr("chipyard.declaration_initializer",
++                      UnitAttr::get(&getContext()));
++        pending.append(op->operand_begin(), op->operand_end());
++      }
++    });
++  }
++};
++} // namespace
++
+ /// Optimize and simplify the Moore dialect IR.
+ void circt::populateVerilogToMoorePipeline(OpPassManager &pm) {
++  pm.addPass(std::make_unique<RememberDeclarationDPI>());
+   {
+     // Perform an initial cleanup and preprocessing across all
+     // modules/functions.
+--- a/MooreToCore.cpp
++++ b/MooreToCore.cpp
+@@ -2294,9 +2294,12 @@
+     auto lookup = op->getAttr("chipyard.dpi_context_lookup");
+     auto frame = op->getAttr("chipyard.sv_scope_call");
+     auto unresolved = op->getAttr("chipyard.sv_scope_unresolved");
++    auto initial = op->getAttr("chipyard.declaration_initializer");
+     auto replacement = rewriter.replaceOpWithNewOp<sim::DPICallOp>(
+         op, convResTypes, op.getCalleeAttr(), /*clock=*/Value(),
+         /*enable=*/Value(), adaptor.getInputs());
++    if (initial)
++      replacement->setAttr("chipyard.declaration_initializer", initial);
+     if (lookup)
+       replacement->setAttr("chipyard.dpi_context_lookup", lookup);
+     if (frame)

@@ -12,7 +12,10 @@
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
@@ -23,7 +26,10 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Tools/Plugins/PassPlugin.h"
+#include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/Passes.h"
+#include <array>
+#include <optional>
 
 using namespace mlir;
 using namespace circt;
@@ -120,6 +126,11 @@ struct PushStructUpdates
 struct SnapshotGlobalSignalInitializers
     : PassWrapper<SnapshotGlobalSignalInitializers, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SnapshotGlobalSignalInitializers)
+  SnapshotGlobalSignalInitializers() = default;
+  SnapshotGlobalSignalInitializers(
+      const SnapshotGlobalSignalInitializers &other)
+      : PassWrapper(other) {}
+  Option<bool> deferRuntime{*this, "defer-runtime", llvm::cl::init(false)};
   StringRef getArgument() const override {
     return "chipyard-snapshot-global-signal-initializers";
   }
@@ -234,6 +245,8 @@ struct SnapshotGlobalSignalInitializers
     // Resolve every original dependency before replacing any initializer body.
     for (auto global : globals)
       if (!evaluate(global)) {
+        if (deferRuntime)
+          continue;
         global.emitError("native global signal initialization requires a pure "
                          "constant startup value; runtime, effectful or cyclic "
                          "dependencies are unsupported");
@@ -241,7 +254,7 @@ struct SnapshotGlobalSignalInitializers
         return;
       }
     for (auto global : globals) {
-      if (global.getInitRegion().empty())
+      if (global.getInitRegion().empty() || !values.contains(global))
         continue;
       Region region;
       auto *block = new Block;
@@ -256,6 +269,379 @@ struct SnapshotGlobalSignalInitializers
   }
 };
 
+// A declaration's DPI initializer runs once, before time-zero processes. Keep
+// the effectful dependency graph inside seq.initial so ordinary evaluation
+// cannot reexecute it. Closed declarations may use native storage when enabled;
+// input-dependent, unbound contextual, escaping, or cyclic cases retain the
+// startup-value diagnostic below. Native scope and storage handles may be
+// captured under their initialize-before-model contract.
+static bool readOnlyDeclaration(llhd::SignalOp signal) {
+  return !signal->hasAttr("chipyard.dpi_captures") &&
+         llvm::all_of(signal->getUsers(),
+                      [](Operation *user) { return isa<llhd::ProbeOp>(user); });
+}
+
+// These generated binding outputs are established once by initialize(), before
+// the compiled model's initial function. No ordinary input or blackbox output
+// acquires this contract by having a constant-looking value.
+static bool nativeStartupScope(Value value) {
+  auto instance = value.getDefiningOp<hw::InstanceOp>();
+  auto module =
+      instance ? SymbolTable::lookupNearestSymbolFrom<hw::HWModuleExternOp>(
+                     instance, instance.getModuleNameAttr())
+               : hw::HWModuleExternOp{};
+  auto name = module ? module.getVerilogName() : std::optional<StringRef>{};
+  if (!name || (*name != "ArcDpiScope" && *name != "ArcDpiScopeRoot") ||
+      instance.getNumOperands() || instance.getNumResults() != 1 ||
+      !value.getType().isInteger(64))
+    return false;
+  bool root = false, mode = *name == "ArcDpiScopeRoot", scope = mode;
+  for (auto param : instance.getParameters()) {
+    auto entry = cast<hw::ParamDeclAttr>(param);
+    auto text = dyn_cast_or_null<StringAttr>(entry.getValue());
+    if (!text)
+      return false;
+    if (entry.getName() == "ROOTKEY")
+      root = !text.getValue().empty();
+    else if (entry.getName() == "MODE")
+      mode = text.getValue() == "local" || text.getValue() == "root" ||
+             text.getValue() == "global";
+    else if (entry.getName() == "SCOPE")
+      scope = true;
+    else
+      return false;
+  }
+  return root && mode && scope;
+}
+
+static bool nativeStartupMemory(Value value) {
+  auto instance = value.getDefiningOp<hw::InstanceOp>();
+  auto module =
+      instance ? SymbolTable::lookupNearestSymbolFrom<hw::HWModuleExternOp>(
+                     instance, instance.getModuleNameAttr())
+               : hw::HWModuleExternOp{};
+  auto name = module ? module.getVerilogName() : std::optional<StringRef>{};
+  if (!name || *name != "ArcSignalMemory" || instance.getNumOperands() ||
+      instance.getNumResults() != 2 || !value.getType().isInteger(64) ||
+      cast<OpResult>(value).getResultNumber() != 0)
+    return false;
+  bool bits = false, initial = false;
+  for (auto attr : instance.getParameters()) {
+    auto entry = cast<hw::ParamDeclAttr>(attr);
+    if (entry.getName() == "BITS") {
+      auto size = dyn_cast_or_null<IntegerAttr>(entry.getValue());
+      bits = size && size.getValue().getLimitedValue() > 0 &&
+             size.getValue().getLimitedValue() <= (1u << 24);
+    } else if (entry.getName() == "INIT") {
+      initial = isa_and_nonnull<IntegerAttr>(entry.getValue());
+    } else if (entry.getName() != "KEY" && entry.getName() != "CAPTURES" &&
+               entry.getName() != "PATH" && entry.getName() != "STARTUP") {
+      return false;
+    } else if (!isa_and_nonnull<StringAttr>(entry.getValue())) {
+      return false;
+    }
+  }
+  return bits && initial;
+}
+
+static bool nativeInitialRead(Operation *op) {
+  auto call = dyn_cast<sim::DPICallOp>(op);
+  if (!call || call.getClock() || call.getEnable() ||
+      call.getInputs().size() != 5 || call.getNumResults() != 1 ||
+      !call.getResult(0).getType().isInteger(64) ||
+      !nativeStartupMemory(call.getInputs()[0]) ||
+      !llvm::all_of(call.getInputs().getTypes(),
+                    [](Type type) { return type.isInteger(64); }))
+    return false;
+  auto fn = SymbolTable::lookupNearestSymbolFrom<sim::DPIFuncOp>(
+      call, call.getCalleeAttr());
+  return fn && fn.getVerilogName() == StringRef("chipyard_arc_signal_read");
+}
+
+// Retain a single ordered startup region as native storage makes further
+// declaration dependencies available. The original effect order is checked
+// before any expression graph is moved.
+static void freezeDeclarationDPI(hw::HWModuleOp module,
+                                 bool nativeStorage = false,
+                                 bool partial = false) {
+  auto *body = module.getBodyBlock();
+  seq::InitialOp previous;
+  for (auto initial : body->getOps<seq::InitialOp>())
+    if (initial->hasAttr("chipyard.declaration_startup")) {
+      if (previous)
+        return;
+      previous = initial;
+    }
+  struct Slice {
+    DenseMap<Value, Value> aliases;
+    DenseSet<Operation *> ops;
+    DenseSet<Value> captures, available, active;
+    bool hasDPI = false;
+  } combined;
+  auto dependencies = [&](Operation *op) {
+    SmallVector<Value> values;
+    for (auto [index, operand] : llvm::enumerate(op->getOperands()))
+      // The runtime's read version is only a sensitivity token. The startup
+      // read happens at this exact program point and uses the documented zero
+      // token, as compiled SV export reads already do.
+      if (!nativeStorage || !nativeInitialRead(op) || index != 1)
+        values.push_back(operand);
+    return values;
+  };
+  SmallVector<sim::DPICallOp> unused;
+  for (auto call : body->getOps<sim::DPICallOp>())
+    if (call->hasAttr("chipyard.declaration_initializer") &&
+        call.getNumResults() == 1 && call->use_empty())
+      unused.push_back(call);
+  for (auto call : unused) {
+    OpBuilder builder(call);
+    llhd::SignalOp::create(builder, call.getLoc(),
+                           llhd::RefType::get(call.getResult(0).getType()),
+                           StringAttr{}, call.getResult(0));
+  }
+  DenseMap<Operation *, unsigned> position;
+  for (auto [index, op] : llvm::enumerate(*body))
+    position[&op] = index;
+  SmallVector<llhd::SignalOp> pending;
+  for (auto signal : body->getOps<llhd::SignalOp>())
+    if (signal.getInit() && !matchPattern(signal.getInit(), m_Constant()) &&
+        !signal.getInit().getDefiningOp<seq::FromImmutableOp>())
+      pending.push_back(signal);
+  llvm::stable_sort(pending, [&](auto a, auto b) {
+    auto *first = a.getInit().getDefiningOp();
+    auto *next = b.getInit().getDefiningOp();
+    return position.lookup(first && first->getBlock() == body ? first : a) <
+           position.lookup(next && next->getBlock() == body ? next : b);
+  });
+  SmallVector<llhd::SignalOp> signals;
+  for (auto signal : pending) {
+    if (!nativeStorage && !readOnlyDeclaration(signal))
+      continue;
+    Slice slice;
+    std::function<bool(Value, unsigned)> visit = [&](Value value,
+                                                     unsigned depth) {
+      if (slice.aliases.contains(value))
+        return true;
+      if (depth >= 1024 || slice.ops.size() >= 4096 ||
+          !slice.active.insert(value).second)
+        return false;
+      auto *op = value.getDefiningOp();
+      if (!op || op->getBlock() != body || op->getNumRegions())
+        return false;
+      if (auto from = dyn_cast<seq::FromImmutableOp>(op)) {
+        if (!previous || from.getInput().getDefiningOp() != previous)
+          return false;
+        auto index = cast<OpResult>(from.getInput()).getResultNumber();
+        auto oldValue =
+            previous.getBodyBlock()->getTerminator()->getOperand(index);
+        slice.aliases[value] = oldValue;
+        slice.available.insert(oldValue);
+        slice.hasDPI = true;
+      } else if (nativeStartupScope(value) ||
+                 (nativeStorage && nativeStartupMemory(value))) {
+        slice.captures.insert(value);
+        slice.aliases[value] = value;
+      } else if (auto probe = dyn_cast<llhd::ProbeOp>(op)) {
+        auto source = probe.getSignal().getDefiningOp<llhd::SignalOp>();
+        if (!source || !source.getInit() || !readOnlyDeclaration(source) ||
+            !visit(source.getInit(), depth + 1))
+          return false;
+        slice.aliases[value] = slice.aliases.lookup(source.getInit());
+      } else {
+        if (auto call = dyn_cast<sim::DPICallOp>(op)) {
+          auto fn = SymbolTable::lookupNearestSymbolFrom<sim::DPIFuncOp>(
+              call, call.getCalleeAttr());
+          auto decl = call->getAttrOfType<DictionaryAttr>("chipyard.dpi_decl");
+          if (!decl && fn)
+            decl = fn->getAttrOfType<DictionaryAttr>("chipyard.dpi_decl");
+          auto context = decl ? decl.getAs<BoolAttr>("context") : BoolAttr{};
+          auto task = decl ? decl.getAs<BoolAttr>("task") : BoolAttr{};
+          if (call.getClock() || call.getEnable() || !context || !task ||
+              task.getValue())
+            return false;
+          if (context.getValue() &&
+              (!fn || !fn->hasAttr("chipyard.native_context_scope") ||
+               call.getInputs().empty() ||
+               !nativeStartupScope(call.getInputs()[0])))
+            return false;
+          slice.hasDPI = true;
+        } else if (!isPure(op)) {
+          return false;
+        }
+        for (auto operand : dependencies(op))
+          if (!visit(operand, depth + 1))
+            return false;
+        slice.ops.insert(op);
+        for (auto result : op->getResults())
+          slice.aliases[result] = result;
+      }
+      slice.active.erase(value);
+      return true;
+    };
+    if (!visit(signal.getInit(), 0)) {
+      if (partial)
+        break;
+      continue;
+    }
+    if (!slice.hasDPI)
+      continue;
+    signals.push_back(signal);
+    combined.ops.insert(slice.ops.begin(), slice.ops.end());
+    combined.captures.insert(slice.captures.begin(), slice.captures.end());
+    combined.available.insert(slice.available.begin(), slice.available.end());
+    for (auto [value, alias] : slice.aliases)
+      combined.aliases[value] = alias;
+  }
+  if (signals.empty() || combined.ops.size() > 4096)
+    return;
+  DenseSet<Operation *> visited;
+  SmallVector<Operation *> ordered, calls, originalCalls;
+  SmallVector<SmallVector<Operation *>> plans;
+  auto effect = [&](Operation *op) {
+    return isa<sim::DPICallOp>(op) &&
+           (!nativeStorage || !nativeInitialRead(op));
+  };
+  DenseMap<Operation *, bool> temporal;
+  std::function<bool(Value)> samplesStorage = [&](Value value) {
+    value = combined.aliases.lookup(value);
+    if (combined.captures.contains(value) || combined.available.contains(value))
+      return false;
+    auto *op = value.getDefiningOp();
+    if (auto found = temporal.find(op); found != temporal.end())
+      return found->second;
+    bool sampled = nativeStorage && nativeInitialRead(op);
+    // A user call's result is fixed at that original call. A later declaration
+    // can resample native storage, but cannot duplicate that user's callback.
+    if (!sampled && !effect(op))
+      sampled = llvm::any_of(dependencies(op), samplesStorage);
+    temporal[op] = sampled;
+    return sampled;
+  };
+  for (auto signal : signals) {
+    SmallVector<Operation *> plan;
+    DenseSet<Operation *> local;
+    std::function<void(Value)> order = [&](Value value) {
+      value = combined.aliases.lookup(value);
+      if (combined.captures.contains(value) ||
+          combined.available.contains(value))
+        return;
+      auto *op = value.getDefiningOp();
+      if (visited.contains(op) || !local.insert(op).second)
+        return;
+      for (auto operand : dependencies(op))
+        order(operand);
+      plan.push_back(op);
+      ordered.push_back(op);
+      if (effect(op))
+        calls.push_back(op);
+      if (!samplesStorage(value))
+        visited.insert(op);
+    };
+    order(signal.getInit());
+    plans.push_back(std::move(plan));
+  }
+  for (auto &op : *body)
+    if (combined.ops.contains(&op) && effect(&op))
+      originalCalls.push_back(&op);
+  if (calls != originalCalls)
+    return;
+  DenseSet<Operation *> tainted, destinations;
+  for (auto signal : signals)
+    destinations.insert(signal);
+  for (auto *op : ordered) {
+    bool depends =
+        effect(op) || llvm::any_of(dependencies(op), [&](Value value) {
+          return tainted.contains(
+              combined.aliases.lookup(value).getDefiningOp());
+        });
+    if (!depends)
+      continue;
+    tainted.insert(op);
+    for (auto *user : op->getUsers())
+      if (!combined.ops.contains(user) && !destinations.contains(user))
+        return;
+  }
+  OpBuilder outer(previous ? previous.getOperation() : &body->front());
+  SmallVector<Type> types;
+  SmallVector<Value> handles;
+  if (previous) {
+    for (auto result : previous.getResults())
+      types.push_back(
+          cast<seq::ImmutableType>(result.getType()).getInnerType());
+    llvm::append_range(handles, previous.getInputs());
+  }
+  unsigned oldResults = types.size();
+  for (auto signal : signals)
+    types.push_back(signal.getInit().getType());
+  auto initial = seq::InitialOp::create(outer, module.getLoc(), types);
+  initial->setAttr("chipyard.declaration_startup", outer.getUnitAttr());
+  if (previous)
+    initial.getBody().takeBody(previous.getBody());
+  auto *block = initial.getBodyBlock();
+  IRMapping mapping;
+  for (auto value : combined.available)
+    mapping.map(value, value);
+  DenseSet<Value> captured;
+  for (auto [handle, argument] : llvm::zip(handles, block->getArguments())) {
+    auto cast = handle.getDefiningOp<UnrealizedConversionCastOp>();
+    if (cast && cast.getNumOperands() == 1) {
+      captured.insert(cast.getOperand(0));
+      mapping.map(cast.getOperand(0), argument);
+    }
+  }
+  for (auto &op : *body)
+    for (auto value : op.getResults())
+      if (combined.captures.contains(value) && captured.insert(value).second) {
+        auto cast = UnrealizedConversionCastOp::create(
+            outer, value.getLoc(),
+            TypeRange{seq::ImmutableType::get(value.getType())},
+            ValueRange{value});
+        cast->setAttr("chipyard.native_startup_input", outer.getUnitAttr());
+        handles.push_back(cast.getResult(0));
+        mapping.map(value, block->addArgument(value.getType(), value.getLoc()));
+      }
+  initial.getInputsMutable().assign(handles);
+  OpBuilder builder(block, block->end());
+  Operation *yield = previous ? block->getTerminator() : nullptr;
+  if (yield)
+    builder.setInsertionPoint(yield);
+  SmallVector<Value> values;
+  if (yield)
+    llvm::append_range(values, yield->getOperands());
+  for (auto [signal, plan] : llvm::zip(signals, plans)) {
+    for (auto *op : plan) {
+      for (auto operand : dependencies(op))
+        mapping.map(operand, mapping.lookup(combined.aliases.lookup(operand)));
+      if (nativeStorage && nativeInitialRead(op))
+        mapping.map(
+            op->getOperand(1),
+            hw::ConstantOp::create(builder, op->getLoc(), APInt(64, 0)));
+      builder.clone(*op, mapping);
+    }
+    values.push_back(mapping.lookup(combined.aliases.lookup(signal.getInit())));
+  }
+  if (yield)
+    yield->setOperands(values);
+  else
+    seq::YieldOp::create(builder, module.getLoc(), values);
+  for (auto [index, signal] : llvm::enumerate(signals))
+    signal.getInitMutable().assign(seq::FromImmutableOp::create(
+        outer, signal.getLoc(), signal.getInit().getType(),
+        initial.getResult(oldResults + index)));
+  if (previous) {
+    for (auto [before, after] :
+         llvm::zip(previous.getResults(), initial.getResults()))
+      before.replaceAllUsesWith(after);
+    previous.erase();
+  }
+  DenseSet<Operation *> erased;
+  for (auto *op : llvm::reverse(ordered))
+    if (!erased.contains(op) && op->use_empty()) {
+      erased.insert(op);
+      op->erase();
+    }
+}
+
 // Signal initializers run before time-zero processes and continuous drives.
 // Cloning their pure dependency graph replaces reads of another signal with
 // that signal's initial value. Leaving a probe in this graph would turn an
@@ -263,14 +649,21 @@ struct SnapshotGlobalSignalInitializers
 struct SnapshotSignalInitializers
     : PassWrapper<SnapshotSignalInitializers, OperationPass<hw::HWModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SnapshotSignalInitializers)
+  SnapshotSignalInitializers() = default;
+  SnapshotSignalInitializers(const SnapshotSignalInitializers &other)
+      : PassWrapper(other) {}
+  Option<bool> nativeStorage{*this, "native-storage", llvm::cl::init(false)};
+  Option<bool> deferRuntime{*this, "defer-runtime", llvm::cl::init(false)};
   StringRef getArgument() const override {
     return "chipyard-snapshot-signal-initializers";
   }
   void runOnOperation() override {
     auto module = getOperation();
+    freezeDeclarationDPI(module, nativeStorage, deferRuntime);
     auto *body = module.getBodyBlock();
     OpBuilder builder(body, body->begin());
     DenseMap<Value, Value> initial;
+    DenseSet<Value> dynamicInitial;
     DenseSet<Value> active;
     std::function<Value(Value)> snapshot = [&](Value value) -> Value {
       if (auto found = initial.find(value); found != initial.end())
@@ -289,8 +682,17 @@ struct SnapshotSignalInitializers
       auto *op = value.getDefiningOp();
       if (!op || op->getBlock() != body)
         return finish({});
+      if (isa<seq::FromImmutableOp>(op)) {
+        dynamicInitial.insert(value);
+        return finish(value);
+      }
       if (auto probe = dyn_cast<llhd::ProbeOp>(op)) {
         auto signal = probe.getSignal().getDefiningOp<llhd::SignalOp>();
+        if (signal && deferRuntime && !readOnlyDeclaration(signal) &&
+            (signal->hasAttr("chipyard.dpi_captures") ||
+             (signal.getInit() &&
+              !matchPattern(signal.getInit(), m_Constant()))))
+          return finish({});
         if (signal && signal.getInit())
           return finish(snapshot(signal.getInit()));
         auto type = value.getType();
@@ -335,6 +737,9 @@ struct SnapshotSignalInitializers
           return finish({});
         mapping.map(operand, input);
       }
+      bool dynamic = llvm::any_of(op->getOperands(), [&](Value operand) {
+        return dynamicInitial.contains(mapping.lookup(operand));
+      });
       auto *clone = builder.clone(*op, mapping);
       SmallVector<Value> folded;
       if (succeeded(builder.tryFold(clone, folded)) && !folded.empty()) {
@@ -346,6 +751,13 @@ struct SnapshotSignalInitializers
              llvm::zip(op->getResults(), clone->getResults()))
           initial[original] = replacement;
       }
+      if (dynamic)
+        for (auto result : op->getResults()) {
+          auto replacement = initial.lookup(result);
+          // A folded constant no longer depends on immutable startup storage.
+          if (!matchPattern(replacement, m_Constant()))
+            dynamicInitial.insert(replacement);
+        }
       return finish(initial.lookup(value));
     };
     SmallVector<llhd::SignalOp> signals;
@@ -355,7 +767,10 @@ struct SnapshotSignalInitializers
       if (!signal.getInit())
         continue;
       auto value = snapshot(signal.getInit());
-      if (!value) {
+      if (!value || (dynamicInitial.contains(value) &&
+                     !readOnlyDeclaration(signal) && !nativeStorage)) {
+        if (deferRuntime)
+          continue;
         signal.emitError(
             "native signal initialization requires a pure startup "
             "value; runtime or cyclic dependencies are unsupported");
@@ -732,6 +1147,104 @@ struct SignalState : PassWrapper<SignalState, OperationPass<ModuleOp>> {
   }
 };
 
+// Native signal-memory providers are initialized before the model's initial
+// function. Materialize immutable declaration values into that existing storage
+// before lowering clocked or asynchronous procedural writes.
+struct PrepareDeclarationInitializers
+    : PassWrapper<PrepareDeclarationInitializers, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PrepareDeclarationInitializers)
+  StringRef getArgument() const override {
+    return "chipyard-prepare-declaration-initializers";
+  }
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<hw::HWDialect, seq::SeqDialect, comb::CombDialect,
+                    llhd::LLHDDialect, sim::SimDialect, func::FuncDialect,
+                    LLVM::LLVMDialect, cf::ControlFlowDialect, ub::UBDialect,
+                    arith::ArithDialect>();
+  }
+  void runOnOperation() override {
+    auto measure = [&]() {
+      std::array<unsigned, 3> counts{};
+      getOperation().walk([&](llhd::SignalOp signal) {
+        ++counts[0];
+        if (signal.getInit() && !matchPattern(signal.getInit(), m_Constant()) &&
+            !signal.getInit().getDefiningOp<seq::FromImmutableOp>())
+          ++counts[1];
+      });
+      getOperation().walk([&](sim::DPICallOp call) {
+        if (isa<hw::HWModuleOp>(call->getParentOp()) &&
+            call->hasAttr("chipyard.declaration_initializer"))
+          ++counts[2];
+      });
+      return counts;
+    };
+    auto before = measure();
+    unsigned limit = 4 * (before[0] + before[2] + 1);
+    for (unsigned iteration = 0; iteration < limit; ++iteration) {
+      OpPassManager normalize(ModuleOp::getOperationName());
+      auto partial = std::make_unique<SnapshotSignalInitializers>();
+      partial->nativeStorage = true;
+      partial->deferRuntime = true;
+      normalize.addNestedPass<hw::HWModuleOp>(std::move(partial));
+      if (failed(runPipeline(normalize, getOperation()))) {
+        signalPassFailure();
+        return;
+      }
+      bool needed = false;
+      getOperation().walk([&](llhd::SignalOp signal) {
+        needed |= signal.getInit() &&
+                  signal.getInit().getDefiningOp<seq::FromImmutableOp>() &&
+                  (!readOnlyDeclaration(signal) ||
+                   signal->hasAttr("chipyard.dpi_captures"));
+      });
+      if (needed) {
+        OpPassManager storage(ModuleOp::getOperationName());
+        if (failed(parsePassPipeline(
+                "chipyard-native-signal-memory{initializers-only=true}",
+                storage)) ||
+            failed(runPipeline(storage, getOperation()))) {
+          signalPassFailure();
+          return;
+        }
+      }
+      auto after = measure();
+      if (after == before)
+        return;
+      before = after;
+    }
+    getOperation().emitError(
+        "native declaration initialization dependency graph did not stabilize");
+    signalPassFailure();
+  }
+};
+
+// Preserve the single-block immutable startup frame while using the SDK's
+// conversion patterns and operation set for ordinary procedural SCF. Startup
+// SCF is lowered later by the normal Arc/LLVM pipeline after state allocation.
+struct LowerProceduralSCF
+    : PassWrapper<LowerProceduralSCF, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LowerProceduralSCF)
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry
+        .insert<arith::ArithDialect, cf::ControlFlowDialect, scf::SCFDialect>();
+  }
+  void runOnOperation() override {
+    RewritePatternSet patterns(&getContext());
+    populateSCFToControlFlowConversionPatterns(patterns);
+    ConversionTarget target(getContext());
+    target.addDynamicallyLegalOp<scf::ForallOp, scf::ForOp, scf::IfOp,
+                                 scf::IndexSwitchOp, scf::ParallelOp,
+                                 scf::WhileOp, scf::ExecuteRegionOp>(
+        [](Operation *op) {
+          return bool(op->getParentOfType<seq::InitialOp>());
+        });
+    target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
+    if (failed(applyPartialConversion(getOperation(), target,
+                                      std::move(patterns))))
+      signalPassFailure();
+  }
+};
+
 // The SDK LLHD pipeline promotes unconditional signal cycles to SSA and drops
 // their initializers. Keep its lowering order, inserting native feedback state
 // immediately before that promotion. Clocked state still uses normal register
@@ -746,16 +1259,21 @@ struct PrepareNativeLLHD
     registry.insert<hw::HWDialect, seq::SeqDialect, comb::CombDialect,
                     llhd::LLHDDialect, arith::ArithDialect,
                     cf::ControlFlowDialect, scf::SCFDialect>();
+    PrepareDeclarationInitializers().getDependentDialects(registry);
   }
   void runOnOperation() override {
     OpPassManager pipeline(ModuleOp::getOperationName());
     pipeline.addNestedPass<hw::HWModuleOp>(llhd::createWrapProceduralOpsPass());
-    pipeline.addPass(createSCFToControlFlowPass());
+    pipeline.addPass(std::make_unique<LowerProceduralSCF>());
     pipeline.addPass(llhd::createInlineCallsPass());
     pipeline.addPass(createSymbolDCEPass());
     pipeline.addPass(std::make_unique<SnapshotGlobalSignalInitializers>());
+    pipeline.addPass(std::make_unique<PrepareDeclarationInitializers>());
+    auto &snapshot = pipeline.nest<hw::HWModuleOp>();
+    auto initializers = std::make_unique<SnapshotSignalInitializers>();
+    initializers->nativeStorage = true;
+    snapshot.addPass(std::move(initializers));
     auto &module = pipeline.nest<hw::HWModuleOp>();
-    module.addPass(std::make_unique<SnapshotSignalInitializers>());
     module.addPass(createSROA());
     if (failed(parsePassPipeline("chipyard-native-mem2reg", module))) {
       getOperation().emitError(
@@ -798,6 +1316,7 @@ mlirGetPassPluginInfo() {
             PassRegistration<SignalState>();
             PassRegistration<SnapshotSignalInitializers>();
             PassRegistration<SnapshotGlobalSignalInitializers>();
+            PassRegistration<PrepareDeclarationInitializers>();
             PassRegistration<PrepareNativeLLHD>();
           }};
 }

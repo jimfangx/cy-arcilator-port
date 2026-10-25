@@ -354,6 +354,7 @@ class SignalMemory : public Binding {
   std::vector<Write> delayed;
   uint64_t width = 0, revision = 1;
   SignalMemory *storage = this;
+  bool startup_claimed = false;
   bool put(uint64_t offset, uint64_t count, uint64_t value) {
     bool changed = false;
     for (uint64_t i = 0; i < count; ++i) {
@@ -380,6 +381,7 @@ public:
       storage =
           static_cast<SignalMemory *>(runtime.share_signal_memory(key, this));
       if (storage != this && (storage->width != width ||
+                              storage->text("STARTUP") != text("STARTUP") ||
                               integer_bits(storage->text("INIT", "0"),
                                            unsigned(width), 0) != initial))
         throw std::runtime_error("conflicting native global signal layout: " +
@@ -389,6 +391,13 @@ public:
       bits = std::move(initial);
     port("handle").set(uint64_t(reinterpret_cast<uintptr_t>(storage)));
     port("version").set(storage->revision);
+  }
+  uint64_t claim_startup() {
+    if (storage != this)
+      return storage->claim_startup();
+    bool previous = startup_claimed;
+    startup_claimed = true;
+    return !previous;
   }
   uint64_t read(uint64_t offset, uint64_t available, uint64_t count) const {
     if (!count || count > 64)
@@ -975,6 +984,12 @@ template <class T> void add(const std::string &name) {
   });
 }
 } // namespace
+extern "C" uint64_t chipyard_arc_signal_claim_startup(uint64_t handle) {
+  if (!handle)
+    throw std::runtime_error(
+        "uninitialized native signal-memory startup handle");
+  return reinterpret_cast<SignalMemory *>(uintptr_t(handle))->claim_startup();
+}
 extern "C" uint64_t chipyard_arc_signal_read(uint64_t handle, uint64_t,
                                              uint64_t offset,
                                              uint64_t available,

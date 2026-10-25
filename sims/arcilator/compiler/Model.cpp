@@ -14,6 +14,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
@@ -1475,6 +1476,52 @@ struct SeedDPIOutputs : PassWrapper<SeedDPIOutputs, OperationPass<ModuleOp>> {
   }
 };
 
+// Arc conversion can outline immutable captures and from_immutable into
+// transfer functions carrying !seq.immutable arguments or results. Expose these
+// boundaries at their call sites before state lowering unwraps their values.
+// Only calls carrying immutable types are expanded; ordinary arcs stay intact.
+struct InlineImmutableArcs
+    : PassWrapper<InlineImmutableArcs, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(InlineImmutableArcs)
+  StringRef getArgument() const override {
+    return "chipyard-inline-immutable-arcs";
+  }
+  void runOnOperation() override {
+    SmallVector<arc::CallOp> calls;
+    auto collect = [&](arc::CallOp call) {
+      auto immutable = [](Type type) { return isa<seq::ImmutableType>(type); };
+      if (llvm::any_of(call.getOperandTypes(), immutable) ||
+          llvm::any_of(call.getResultTypes(), immutable))
+        calls.push_back(call);
+    };
+    getOperation().walk(collect);
+    SymbolTableCollection symbols;
+    for (unsigned index = 0; index < calls.size(); ++index) {
+      auto call = calls[index];
+      auto arc = symbols.lookupNearestSymbolFrom<arc::DefineOp>(
+          call, call.getArcAttr());
+      if (!arc || index >= 4096) {
+        call.emitError(
+            "cannot expose immutable arc arguments before state lowering");
+        signalPassFailure();
+        return;
+      }
+      IRMapping mapping;
+      mapping.map(arc.getBodyBlock().getArguments(), call.getInputs());
+      OpBuilder builder(call);
+      for (auto &op : arc.getBodyBlock().without_terminator()) {
+        auto *clone = builder.clone(op, mapping);
+        clone->walk(collect);
+      }
+      SmallVector<Value> results;
+      for (auto value : arc.getBodyBlock().getTerminator()->getOperands())
+        results.push_back(mapping.lookupOrDefault(value));
+      call.replaceAllUsesWith(results);
+      call.erase();
+    }
+  }
+};
+
 // The SDK creates C-ABI wrapper functions for DPI declarations, but leaves
 // procedural calls in the sim dialect. A coroutine already supplies their
 // control flow and event gating; invoke the wrapper at that exact program
@@ -1521,7 +1568,8 @@ struct LowerProceduralDPI
       if (!call.getClock() && !call.getEnable() &&
           (call->getParentOfType<arc::CoroutineDefineOp>() ||
            call->getParentOfType<llhd::CoroutineOp>() ||
-           call->getParentOfType<func::FuncOp>()))
+           call->getParentOfType<func::FuncOp>() ||
+           call->getParentOfType<seq::InitialOp>()))
         calls.push_back(call);
     });
     for (auto call : calls) {
@@ -2353,6 +2401,7 @@ mlirGetPassPluginInfo() {
             PassRegistration<ExportModelInfo>();
             PassRegistration<RecordTimeDependencies>();
             PassRegistration<CoalesceDPI>();
+            PassRegistration<InlineImmutableArcs>();
             PassRegistration<LowerProceduralDPI>();
             PassRegistration<FinalizeDPIABI>();
             PassRegistration<LowerRealFormats>();

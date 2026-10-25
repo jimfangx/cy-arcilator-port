@@ -122,3 +122,142 @@ subprocess.run([str(args.circt_opt), str(source), '--load-pass-plugin=' + str(li
 body = output.read_text().split('hw.module @Reader', 1)[1]
 assert 'hw.constant 22 : i8' in body and 'llhd.prb' not in body, body
 print('PASS: module-local initialization snapshots shared nonzero startup state')
+
+# Declaration DPI effects have a distinct startup frame. Runtime inputs,
+# unbound context and escaping dependencies must not be frozen into it.
+# Mutable declarations also require the native-storage pipeline.
+def declaration_probe(name, body, *, context=False, task=False, metadata=True,
+                      success=False, native_storage=False):
+    attrs = (' attributes {chipyard.dpi_decl = {context = ' + str(context).lower() +
+             ', task = ' + str(task).lower() + '}}') if metadata else ''
+    source = args.work / ('declaration-' + name + '.mlir')
+    source.write_text('module {\n sim.func.dpi private @seed(in %tag: i32, return return: i32)' +
+        attrs + '\n hw.module @Startup(in %data: i32, out q: i32) {\n' +
+        ' %tag = hw.constant 17 : i32\n %time = llhd.constant_time <0ns, 0d, 1e>\n' + body +
+        '\n }\n}\n')
+    plugins = ['--load-pass-plugin=' + str(library)]
+    pipeline = 'hw.module(chipyard-snapshot-signal-initializers)'
+    if native_storage:
+        storage = plugin(args.circt_opt, os.environ.get('CXX', 'c++'),
+                         sim / 'generated-src/compiler', sim / 'compiler/SignalMemory.cpp')
+        plugins.append('--load-pass-plugin=' + str(storage))
+        pipeline = ('chipyard-prepare-declaration-initializers,'
+                    'hw.module(chipyard-snapshot-signal-initializers{native-storage=true})')
+    result = subprocess.run([str(args.circt_opt), str(source), *plugins,
+        '--pass-pipeline=builtin.module(' + pipeline + ')'],
+        capture_output=True, text=True)
+    (args.work / ('declaration-' + name + '.log')).write_text(result.stdout + result.stderr)
+    if success:
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.count('seq.initial(') == 1, result.stdout
+        assert result.stdout.count('sim.func.dpi.call @seed(') == 1, result.stdout
+        if native_storage:
+            assert 'ArcSignalMemory' in result.stdout and 'chipyard_arc_signal_write' in result.stdout
+        assert result.stdout.index('seq.initial(') < result.stdout.index('sim.func.dpi.call')
+    else:
+        assert result.returncode != 0 and ('native signal initialization requires a pure startup value'
+                                           in result.stderr), result.stderr
+
+base = (' %v = sim.func.dpi.call @seed(%tag) : (i32) -> i32\n'
+        ' %a = llhd.sig %v : <i32>\n %q = llhd.prb %a : i32\n hw.output %q : i32')
+declaration_probe('closed', base, success=True)
+declaration_probe('shared-call', base.replace(' hw.output',
+    ' %b = llhd.sig %v : <i32>\n hw.output'), success=True)
+unused = (' %v = sim.func.dpi.call @seed(%tag) '
+          '{chipyard.declaration_initializer} : (i32) -> i32\n hw.output %tag : i32')
+declaration_probe('unused-tagged', unused, success=True)
+declaration_probe('unused-live-input', unused.replace('@seed(%tag)', '@seed(%data)'))
+declaration_probe('input', base.replace('@seed(%tag)', '@seed(%data)'))
+declaration_probe('context', base, context=True)
+declaration_probe('task', base, task=True)
+declaration_probe('unknown-ABI', base, metadata=False)
+declaration_probe('write', base.replace(' hw.output', ' llhd.drv %a, %data after %time : i32\n hw.output'))
+declaration_probe('escape', base.replace('hw.output %q', 'hw.output %v'))
+declaration_probe('cycle', base.replace('@seed(%tag)', '@seed(%q)'))
+declaration_probe('mutable-derived', base.replace(' hw.output %q : i32',
+    ' %b = llhd.sig %q : <i32>\n %pb = llhd.prb %b : i32\n'
+    ' llhd.drv %b, %data after %time : i32\n hw.output %pb : i32'))
+declaration_probe('effect-order',
+    ' %first = sim.func.dpi.call @seed(%later_value) : (i32) -> i32\n'
+    ' %later = sim.func.dpi.call @seed(%tag) : (i32) -> i32\n'
+    ' %a = llhd.sig %first : <i32>\n %b = llhd.sig %later : <i32>\n'
+    ' %later_value = llhd.prb %b : i32\n %q = llhd.prb %a : i32\n hw.output %q : i32')
+declaration_probe('constant-folded-writable',
+    ' %v = sim.func.dpi.call @seed(%tag) : (i32) -> i32\n'
+    ' %a = llhd.sig %v : <i32>\n %q = llhd.prb %a : i32\n'
+    ' %zero = hw.constant 0 : i32\n %z = comb.and %q, %zero : i32\n'
+    ' %b = llhd.sig %z : <i32>\n llhd.drv %b, %data after %time : i32\n'
+    ' hw.output %q : i32', success=True)
+print('PASS: closed declaration DPI startup frame; ten unsafe dependency/effect cases diagnosed')
+
+# Exercise the production storage preparation, including its deferred frontier,
+# rather than relying only on rejection by the standalone snapshot pass.
+for name, body, options in [
+    ('write', base.replace(' hw.output', ' llhd.drv %a, %data after %time : i32\n hw.output'), {'success': True}),
+    ('derived-write', base.replace(' hw.output %q : i32',
+        ' %b = llhd.sig %q : <i32>\n %pb = llhd.prb %b : i32\n'
+        ' llhd.drv %b, %data after %time : i32\n hw.output %pb : i32'), {'success': True}),
+    ('input', base.replace('@seed(%tag)', '@seed(%data)'), {}),
+    ('unused-input', unused.replace('@seed(%tag)', '@seed(%data)'), {}),
+    ('context', base, {'context': True}),
+    ('task', base, {'task': True}),
+    ('unknown-ABI', base, {'metadata': False}),
+    ('escape', base.replace('hw.output %q', 'hw.output %v'), {}),
+    ('cycle', base.replace('@seed(%tag)', '@seed(%q)'), {}),
+    ('effect-order',
+        ' %first = sim.func.dpi.call @seed(%later_value) : (i32) -> i32\n'
+        ' %later = sim.func.dpi.call @seed(%tag) : (i32) -> i32\n'
+        ' %a = llhd.sig %first : <i32>\n %b = llhd.sig %later : <i32>\n'
+        ' %later_value = llhd.prb %b : i32\n %q = llhd.prb %a : i32\n hw.output %q : i32', {}),
+]:
+    declaration_probe('native-' + name, body, native_storage=True, **options)
+print('PASS: native storage preparation accepts writable roots and retains eight unsafe initializer diagnostics')
+
+# Native scope outputs have a provider contract and are available before the
+# model initial function. Other model inputs cannot be asserted immutable by
+# an unvalidated conversion cast.
+startup = plugin(args.circt_opt, os.environ.get('CXX', 'c++'),
+                 sim / 'generated-src/compiler', sim / 'compiler/StartupState.cpp')
+capture = """module {
+ func.func private @seed(i64) -> i64
+ hw.module @Capture(in %scope: i64, out value: i64) {
+  %cap = builtin.unrealized_conversion_cast %scope : i64 to !seq.immutable<i64>
+     {chipyard.native_startup_scope}
+  %imm = seq.initial(%cap) {
+   ^bb0(%arg: i64):
+    %v = func.call @seed(%arg) : (i64) -> i64
+    seq.yield %v : i64
+  } : (!seq.immutable<i64>) -> !seq.immutable<i64>
+  %v = seq.from_immutable %imm : (!seq.immutable<i64>) -> i64
+  hw.output %v : i64
+ }
+}
+"""
+
+def capture_probe(name, text, allowed='scope', success=False):
+    source = args.work / ('startup-capture-' + name + '.mlir')
+    source.write_text(text)
+    result = subprocess.run([str(args.circt_opt), str(source),
+        '--load-pass-plugin=' + str(startup),
+        '--pass-pipeline=builtin.module(chipyard-lower-native-startup-state{scope-inputs=' + allowed + '})'],
+        capture_output=True, text=True)
+    (args.work / ('startup-capture-' + name + '.log')).write_text(result.stdout + result.stderr)
+    if success:
+        assert result.returncode == 0, result.stderr
+        assert 'arc.initial' in result.stdout and 'call @seed' in result.stdout
+        assert 'seq.initial' not in result.stdout and 'unrealized_conversion_cast' not in result.stdout
+    else:
+        assert result.returncode != 0 and ('native startup capture requires a verified initialized binding input'
+                                           in result.stderr), result.stderr
+
+capture_probe('scope', capture, success=True)
+capture_probe('no-contract', capture, allowed='')
+capture_probe('ordinary-input', capture.replace('%scope', '%data'))
+capture_probe('wrong-width', capture.replace('i64', 'i32'))
+capture_probe('multiple-operands', capture.replace('%scope : i64 to', '%scope, %scope : i64, i64 to'))
+capture_probe('escape', capture.replace('  %v = seq.from_immutable',
+    '  %escape = builtin.unrealized_conversion_cast %cap : !seq.immutable<i64> to i64\n'
+    '  %v = seq.from_immutable'))
+capture_probe('arithmetic', capture.replace('  %cap =',
+    '  %sum = comb.add %scope, %scope : i64\n  %cap =').replace('cast %scope :', 'cast %sum :'))
+print('PASS: native startup scope capture and verified SDK state lowering; six unsafe captures diagnosed')

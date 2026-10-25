@@ -290,6 +290,10 @@ def main():
             report['cases'] += make_checks(Path(temp))
         if args.circt_bin:
             report['native_link'] = native_link(work / 'native', args.circt_bin, os.environ.get('CXX', 'c++'), os.environ.get('CC', 'cc'))
+            from native_incremental import check as check_incremental
+            with tempfile.TemporaryDirectory(prefix='incremental-', dir=work) as temp:
+                report['cases'] += check_incremental(args.circt_bin,
+                    os.environ.get('CXX', 'c++'), os.environ.get('CC', 'cc'), Path(temp))
         report['status'] = 'passed'
         print('PASS: native filelist parsing, input invalidation and ' + report['native_link']['status'])
     except BaseException as error:

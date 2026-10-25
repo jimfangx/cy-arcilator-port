@@ -27,7 +27,7 @@ PATCHES = ('interface-arrays.patch', 'timing.patch',
            'unknown-comparisons.patch', 'dpi-context-scopes.patch',
            'dpi-source-hierarchy.patch', 'dpi-open-arrays.patch',
            'static-formals.patch', 'hierarchy-formats.patch', 'scope-lookups.patch',
-           'realtime-f64.patch', 'hierarchical-call-captures.patch', 'inertial-delays.patch', 'parenthesized-delays.patch', 'delay-precision.patch', 'rounded-real-casts.patch', 'vpi-source-metadata.patch')
+           'realtime-f64.patch', 'hierarchical-call-captures.patch', 'inertial-delays.patch', 'parenthesized-delays.patch', 'delay-precision.patch', 'rounded-real-casts.patch', 'vpi-source-metadata.patch', 'declaration-initializers.patch')
 
 
 def run(*command, **kwargs):

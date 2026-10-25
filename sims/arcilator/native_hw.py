@@ -404,7 +404,7 @@ def compile_rtl(args):
         subprocess.run([
             str(args.circt_opt),
             str(sliced), '--load-pass-plugin=' + str(exports_library),
-            '--pass-pipeline=builtin.module(chipyard-native-signal-memory{exports=true captures-only=true},canonicalize)',
+            '--pass-pipeline=builtin.module(chipyard-native-signal-memory{exports=true captures-only=true defer-initializers=true},canonicalize)',
             '-o',
             str(exported)
         ],
@@ -413,6 +413,14 @@ def compile_rtl(args):
         state_library = plugin(
             args.circt_opt, args.cxx, cache,
             Path(__file__).parent / 'compiler/SignalState.cpp')
+        initialized = args.work / (wrapper + '-initializers.mlir')
+        subprocess.run([
+            str(args.circt_opt), str(sliced),
+            '--load-pass-plugin=' + str(state_library),
+            '--load-pass-plugin=' + str(exports_library),
+            '--pass-pipeline=builtin.module(chipyard-snapshot-global-signal-initializers{defer-runtime=true},chipyard-native-signal-memory{global-initializers=true},chipyard-snapshot-global-signal-initializers,chipyard-prepare-declaration-initializers,chipyard-native-signal-memory{captures-only=true})',
+            '-o', str(initialized)], check=True)
+        sliced = initialized
         memory_promotion_library = plugin(
             args.circt_opt, args.cxx, cache,
             Path(__file__).parent / 'compiler/NativeMem2Reg.cpp')
@@ -421,6 +429,7 @@ def compile_rtl(args):
         subprocess.run([
             str(args.circt_opt),
             str(sliced), '--load-pass-plugin=' + str(state_library),
+            '--load-pass-plugin=' + str(exports_library),
             '--load-pass-plugin=' + str(memory_promotion_library),
             '--pass-pipeline=builtin.module(chipyard-prepare-native-llhd)',
             '-o',
