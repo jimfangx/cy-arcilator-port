@@ -1,0 +1,14 @@
+--- a/llvm/utils/extract_symbols.py
++++ b/llvm/utils/extract_symbols.py
+@@ -183,6 +183,11 @@
+     # see on all symbols, even mangled C++ symbols)
+     if calling_convention_decoration and symbol.startswith("_"):
+         symbol = symbol[1:]
++    # IR-PGO creates hidden COMDAT address aliases with a .local suffix.
++    # They cannot be imported by plugins, and a linker may discard the weak
++    # prevailing copy. Preserve the actual public function, not this alias.
++    if symbol.startswith(("_Z", "._Z")) and symbol.endswith(".local"):
++        return None
+     # Keep unmangled names
+     if not symbol.startswith("_") and not symbol.startswith("."):
+         return symbol

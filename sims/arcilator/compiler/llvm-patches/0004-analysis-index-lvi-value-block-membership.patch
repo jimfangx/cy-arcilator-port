@@ -1,0 +1,84 @@
+--- a/llvm/lib/Analysis/LazyValueInfo.cpp
++++ b/llvm/lib/Analysis/LazyValueInfo.cpp
+@@ -96,6 +96,9 @@
+   class LazyValueInfoCache;
+   struct LVIValueHandle final : public CallbackVH {
+     LazyValueInfoCache *Parent;
++    // A conservative set of blocks whose existing cache may contain this value.
++    // Dead blocks and invalidated entries may leave harmless stale membership.
++    SmallDenseSet<unsigned, 4> CachedBlocks;
+ 
+     LVIValueHandle(Value *V, LazyValueInfoCache *P = nullptr)
+       : CallbackVH(V), Parent(P) { }
+@@ -164,10 +167,11 @@
+     return BlockCache[Number].get();
+   }
+ 
+-  void addValueHandle(Value *Val) {
++  void addValueHandle(Value *Val, BasicBlock *BB) {
+     auto HandleIt = ValueHandles.find_as(Val);
+     if (HandleIt == ValueHandles.end())
+-      ValueHandles.insert({Val, this});
++      HandleIt = ValueHandles.insert({Val, this}).first;
++    HandleIt->CachedBlocks.insert(BB->getNumber());
+   }
+ 
+ public:
+@@ -185,7 +189,7 @@
+     else
+       Entry->LatticeElements.insert({Val, Result});
+ 
+-    addValueHandle(Val);
++    addValueHandle(Val, BB);
+   }
+ 
+   void insertPredecessorResults(Value *Val, BasicBlock *BB,
+@@ -194,7 +198,7 @@
+ 
+     Entry->PredecessorLatticeElements->insert({Val, PredLatticeElements});
+ 
+-    addValueHandle(Val);
++    addValueHandle(Val, BB);
+   }
+ 
+   std::optional<BBLatticeElementMap>
+@@ -233,7 +237,7 @@
+     if (!Entry->NonNullPointers) {
+       Entry->NonNullPointers = InitFn(BB);
+       for (Value *V : *Entry->NonNullPointers)
+-        addValueHandle(V);
++        addValueHandle(V, BB);
+     }
+ 
+     return Entry->NonNullPointers->count(V);
+@@ -260,7 +264,17 @@
+ } // namespace
+ 
+ void LazyValueInfoCache::eraseValue(Value *V) {
+-  for (auto &Elem : BlockCache) {
++  auto HandleIt = ValueHandles.find_as(V);
++  if (HandleIt == ValueHandles.end())
++    return;
++
++  // Match the original block-number order without scanning unrelated blocks.
++  // Membership may include erased blocks or entries cleared by edge threading.
++  SmallVector<unsigned, 4> Blocks(HandleIt->CachedBlocks.begin(),
++                                  HandleIt->CachedBlocks.end());
++  llvm::sort(Blocks);
++  for (unsigned Number : Blocks) {
++    auto &Elem = BlockCache[Number];
+     if (!Elem)
+       continue;
+ 
+@@ -272,9 +286,8 @@
+       Elem->PredecessorLatticeElements->erase(V);
+   }
+ 
+-  auto HandleIt = ValueHandles.find_as(V);
+-  if (HandleIt != ValueHandles.end())
+-    ValueHandles.erase(HandleIt);
++  // This can destroy the callback executing deleted(). Keep it last.
++  ValueHandles.erase(HandleIt);
+ }
+ 
+ void LVIValueHandle::deleted() {

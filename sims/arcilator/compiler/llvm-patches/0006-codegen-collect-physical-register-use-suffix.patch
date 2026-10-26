@@ -1,0 +1,75 @@
+--- a/llvm/lib/CodeGen/LiveIntervalCalc.cpp
++++ b/llvm/lib/CodeGen/LiveIntervalCalc.cpp
+@@ -150,6 +150,33 @@
+   // Visit all operands that read Reg. This may include partial defs.
+   bool IsSubRange = !Mask.all();
+   const TargetRegisterInfo &TRI = *MRI->getTargetRegisterInfo();
++  if (Reg.isPhysical() && Mask.all()) {
++    // Physical subregister indexes are illegal MIR, so physical definitions
++    // cannot read the old register value. Collect only the non-debug use
++    // suffix, preserving its original MRI order without scanning definitions.
++    SmallVector<MachineOperand *, 64> Uses;
++    MRI->collectNonDebugUseOperands(Reg, Uses);
++    for (MachineOperand *MO : Uses) {
++      MO->setIsKill(false);
++      if (!MO->readsReg())
++        continue;
++
++      const MachineInstr *MI = MO->getParent();
++      unsigned OpNo = MO - &MI->getOperand(0);
++      SlotIndex UseIdx;
++      if (MI->isPHI()) {
++        UseIdx = Indexes->getMBBEndIdx(MI->getOperand(OpNo + 1).getMBB());
++      } else {
++        bool IsEarlyClobber = false;
++        unsigned DefIdx;
++        if (MI->isRegTiedToDefOperand(OpNo, &DefIdx))
++          IsEarlyClobber = MI->getOperand(DefIdx).isEarlyClobber();
++        UseIdx = Indexes->getInstructionIndex(*MI).getRegSlot(IsEarlyClobber);
++      }
++      extend(LR, UseIdx, Reg, Undefs);
++    }
++    return;
++  }
+   for (MachineOperand &MO : MRI->reg_nodbg_operands(Reg)) {
+     // Clear all kill flags. They will be reinserted after register allocation
+     // by LiveIntervals::addKillFlags().
+--- a/llvm/lib/CodeGen/MachineRegisterInfo.cpp
++++ b/llvm/lib/CodeGen/MachineRegisterInfo.cpp
+@@ -716,3 +716,21 @@
+     }
+   }
+ }
++
++// Definitions precede uses and Prev links are circular. Traverse only the use
++// suffix backwards, then restore its original order in the appended buffer.
++void MachineRegisterInfo::collectNonDebugUseOperands(
++    Register Reg, SmallVectorImpl<MachineOperand *> &Operands) const {
++  MachineOperand *Head = getRegUseDefListHead(Reg);
++  if (!Head)
++    return;
++  size_t Begin = Operands.size();
++  for (MachineOperand *MO = Head->Contents.Reg.Prev; MO->isUse();
++       MO = MO->Contents.Reg.Prev) {
++    if (!MO->isDebug())
++      Operands.push_back(MO);
++    if (MO == Head)
++      break;
++  }
++  std::reverse(Operands.begin() + Begin, Operands.end());
++}
+--- a/llvm/include/llvm/CodeGen/MachineRegisterInfo.h
++++ b/llvm/include/llvm/CodeGen/MachineRegisterInfo.h
+@@ -559,6 +559,12 @@
+     return make_range(use_nodbg_begin(Reg), use_nodbg_end());
+   }
+ 
++  /// Append non-debug use operands in their original use-list order.
++  /// The backwards circular use suffix avoids scanning preceding definitions.
++  /// Does not mutate the register list or any operand flags.
++  LLVM_ABI void collectNonDebugUseOperands(
++      Register Reg, SmallVectorImpl<MachineOperand *> &Operands) const;
++
+   /// use_instr_nodbg_iterator/use_instr_nodbg_begin/use_instr_nodbg_end - Walk
+   /// all uses of the specified register, stepping by MachineInstr, skipping
+   /// those marked as Debug.

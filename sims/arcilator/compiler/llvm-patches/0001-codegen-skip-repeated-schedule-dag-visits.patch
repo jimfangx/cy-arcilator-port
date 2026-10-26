@@ -1,0 +1,13 @@
+--- a/llvm/lib/CodeGen/ScheduleDAG.cpp
++++ b/llvm/lib/CodeGen/ScheduleDAG.cpp
+@@ -585,6 +585,10 @@
+   do {
+     SU = WorkList.back();
+     WorkList.pop_back();
++    // A reconvergent DAG may enqueue the same node from several predecessors.
++    // Its successors were already examined by the first visit.
++    if (Visited.test(SU->NodeNum))
++      continue;
+     Visited.set(SU->NodeNum);
+     for (const SDep &SuccDep : llvm::reverse(SU->Succs)) {
+       unsigned s = SuccDep.getSUnit()->NodeNum;

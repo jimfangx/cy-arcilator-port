@@ -374,7 +374,8 @@ def clock_execute(circt, cxx, llvm, layout, work, label, expect_failure=False):
     return results
 
 
-def check_clocks(circt, cxx, library, work):
+def check_clocks(circt, cxx, library, work, graph_schedule=False):
+    work.mkdir(parents=True, exist_ok=True)
     source = work / 'clocks.hw.mlir'
     source.write_text(clock_fixture())
     state = work / 'clocks.state.mlir'
@@ -386,7 +387,8 @@ def check_clocks(circt, cxx, library, work):
             ('clock-baseline', 'arc-lower-arcs-to-funcs,arc.model(arc-allocate-state)'),
             ('clock-partitioned', 'chipyard-state-partition-plan,'
              'arc-lower-arcs-to-funcs,arc.model(arc-allocate-state),'
-             'chipyard-state-partition-materialize{min-ops=2 max-ops=16 max-input-words=4}')]:
+             'chipyard-state-partition-materialize{graph-schedule='
+             + str(graph_schedule).lower() + ' min-ops=2 max-ops=16 max-input-words=4}')]:
         allocated = work / (label + '.mlir')
         run([circt / 'circt-opt', state, '--load-pass-plugin=' + str(library),
              '--pass-pipeline=builtin.module(' + pipeline + ')', '-o', allocated],
@@ -447,7 +449,7 @@ def check_fallbacks(circt, library, source, work):
     run([circt / 'circt-opt', source, '-o', normalized])
     run([circt / 'circt-opt', source, '--load-pass-plugin=' + str(library),
          '--pass-pipeline=builtin.module(chipyard-state-partition-materialize{'
-         'min-ops=2 max-ops=16 max-input-words=4 report-file=' +
+         'graph-schedule=false min-ops=2 max-ops=16 max-input-words=4 report-file=' +
          str(missing_report) + '})', '-o', missing])
     assert normalized.read_bytes() == missing.read_bytes(), 'missing plan changed IR'
     no_plan = json.loads(missing_report.read_text())
@@ -466,7 +468,7 @@ def check_fallbacks(circt, library, source, work):
          '--pass-pipeline=builtin.module(chipyard-state-partition-plan)', '-o', planned])
     run([circt / 'circt-opt', planned, '--load-pass-plugin=' + str(library),
          '--pass-pipeline=builtin.module(chipyard-state-partition-materialize{'
-         'min-ops=2 max-ops=16 max-input-words=4 report-file=' + str(trace_report) +
+         'graph-schedule=false min-ops=2 max-ops=16 max-input-words=4 report-file=' + str(trace_report) +
          '})', '-o', materialized])
     assert materialized.read_bytes() == trace_control.read_bytes(), \
         'trace observer fallback changed original IR beyond removing certificates'
@@ -494,7 +496,7 @@ def check_fallbacks(circt, library, source, work):
          '--pass-pipeline=builtin.module(chipyard-state-partition-plan)', '-o', planned])
     run([circt / 'circt-opt', planned, '--load-pass-plugin=' + str(library),
          '--pass-pipeline=builtin.module(chipyard-state-partition-materialize{'
-         'min-ops=4 max-ops=64 max-input-words=1 report-file=' + str(wide_report) +
+         'graph-schedule=false min-ops=4 max-ops=64 max-input-words=1 report-file=' + str(wide_report) +
          '})', '-o', materialized])
     assert wide_control.read_bytes() == materialized.read_bytes(), \
         'wide interface fallback changed original IR beyond removing certificates'
@@ -505,7 +507,7 @@ def check_fallbacks(circt, library, source, work):
         result = run([circt / 'circt-opt', source,
                       '--load-pass-plugin=' + str(library),
                       '--pass-pipeline=builtin.module(chipyard-state-partition-materialize{'
-                      + budget + '})', '-o', work / 'invalid.mlir'], expect=1)
+                      'graph-schedule=false ' + budget + '})', '-o', work / 'invalid.mlir'], expect=1)
         assert 'invalid state partition' in result.stderr
         invalid.append(budget)
     return dict(missing_plan=no_plan, trace_observers=trace,
@@ -526,7 +528,7 @@ def check_guard_faults(circt, cxx, source, work):
         transformed = work / ('missing-' + label + '.mlir')
         run([circt / 'circt-opt', source, '--load-pass-plugin=' + str(library),
              '--pass-pipeline=builtin.module(chipyard-state-partition-plan,'
-             'chipyard-state-partition-materialize{min-ops=5 max-ops=16 max-input-words=4})',
+             'chipyard-state-partition-materialize{graph-schedule=false min-ops=5 max-ops=16 max-input-words=4})',
              '-o', transformed], work / ('missing-' + label + '.log'))
         llvm = lower(circt, transformed, work, 'missing-' + label)
         result = execute(circt, cxx, llvm, work, 'missing-' + label, expect=1)
@@ -590,7 +592,7 @@ def check(circt, cxx, work, baseline_only=False):
     run([circt / 'circt-opt', source, '--load-pass-plugin=' + str(library),
          '--pass-pipeline=builtin.module(chipyard-state-partition-plan,'
          'chipyard-state-partition-materialize{'
-         'min-ops=2 max-ops=16 max-input-words=4})',
+         'graph-schedule=false min-ops=2 max-ops=16 max-input-words=4})',
          '-o', transformed], work / 'partition.log')
     text = transformed.read_text()
     assert (text.count('func.call ') > source.read_text().count('func.call ')
@@ -613,6 +615,10 @@ def check(circt, cxx, work, baseline_only=False):
                                                 candidate_results),
                   fallback=check_fallbacks(circt, library, source, work),
                   actual_pass_faults=check_guard_faults(circt, cxx, source, work))
+    from state_partition_graph import check as check_graph
+    report['dependence_graph'] = check_graph(
+        circt, cxx, work / 'graph', library=library,
+        legacy_source=source, legacy_baseline=baseline_results)
     assert implementation == (SIM / 'compiler/StatePartition.cpp').read_bytes(), \
         'implementation changed during qualification'
     (work / 'result.json').write_text(json.dumps(report, indent=2) + '\n')

@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "project": "llvm/circt",
+  "revision": "fa4f662cbe710906347fac795c581a06c6b99757",
+  "release": "firtool-1.162.0",
+  "llvm_revision": "a17069fea5b271c6824ea773874b007116de9644",
+  "patches": [
+    {
+      "file": "emit-bytecode.patch",
+      "sha256": "9fe91308c298a41c656bf6e4e6566769328b34077f679954751ebba3eb20c4ba"
+    }
+  ],
+  "source": {
+    "path": "tools/arcilator/arcilator.cpp",
+    "original_sha256": "1b420f21a26721c8ba3fa6f7b332a72dcb1e5b6af4c05a6b02b66ff82f3934d7",
+    "patched_sha256": "7bb2c3e8367771ea2fe7567ed47632d37d31a6600484d185aa108528c31833f2"
+  },
+  "original_cmake_sha256": "24f9c36de4361b0c1e5336e5c279fdd9775fb3511bba3e26e0cf0237c07429e1",
+  "qualified_sdk_features": {
+    "ARCILATOR_ENABLE_JIT": true,
+    "CIRCT_LIBFST_ENABLED": false,
+    "GLIBCXX_USE_CXX11_ABI": 1
+  },
+  "license": {
+    "file": "LICENSE.txt",
+    "sha256": "a46080a84f79accac59cf17463144cffa5b6a1dbbc394a9c7bd63ae8a81f1860",
+    "source": "https://github.com/llvm/circt/blob/fa4f662cbe710906347fac795c581a06c6b99757/LICENSE",
+    "spdx": "Apache-2.0 WITH LLVM-exception"
+  },
+  "validation": {
+    "original_driver_version_help_exact_sdk": true,
+    "patched_help_only_adds_emit_bytecode": true,
+    "full_model_json_byte_exact": true,
+    "raw_llvm_body_exact_ignoring_only_module_id_comment": true,
+    "model_configurations": [
+      "RocketConfig",
+      "MegaBoomV3Config",
+      "REFV256D128RocketConfig",
+      "ShuttleConfig"
+    ],
+    "scopes": [
+      "Unmodified SDK-linked driver with existing text output",
+      "Patched driver with Arc conversion bytecode output"
+    ],
+    "complete_build_speedup_claimed": false,
+    "tests_included": false
+  }
+}

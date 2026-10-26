@@ -1,0 +1,11 @@
+# Definition-location exclusions for frontend compiler PGO.
+# Pass these exact bytes at generation and use; no function/workload selectors.
+!src:*.h
+!src:*.hh
+!src:*.hpp
+!src:*.hxx
+!src:*.inc
+!src:*.inl
+!src:*.ipp
+!src:*.def
+!src:*/include/*

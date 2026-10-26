@@ -1,0 +1,323 @@
+--- a/llvm/lib/CodeGen/SelectionDAG/ScheduleDAGRRList.cpp
++++ b/llvm/lib/CodeGen/SelectionDAG/ScheduleDAGRRList.cpp
+@@ -15,6 +15,7 @@
+ //===----------------------------------------------------------------------===//
+ 
+ #include "ScheduleDAGSDNodes.h"
++#include "SourceOrderPrefix.h"
+ #include "llvm/ADT/ArrayRef.h"
+ #include "llvm/ADT/DenseMap.h"
+ #include "llvm/ADT/STLExtras.h"
+@@ -55,6 +56,7 @@
+ #include <limits>
+ #include <memory>
+ #include <utility>
++#include <type_traits>
+ #include <vector>
+ 
+ using namespace llvm;
+@@ -120,6 +122,10 @@
+   "disable-2addr-hack", cl::Hidden, cl::init(true),
+   cl::desc("Disable scheduler's two-address hack"));
+ 
++static cl::opt<bool> VerifySourcePrefix(
++    "verify-source-order-prefix", cl::Hidden, cl::init(false),
++    cl::desc("Compare each indexed source-order pop against the original fold"));
++
+ static cl::opt<int> MaxReorderWindow(
+   "max-sched-reorder", cl::Hidden, cl::init(6),
+   cl::desc("Number of instructions to allow ahead of the critical path "
+@@ -139,6 +145,10 @@
+ private:
+   /// NeedLatency - True if the scheduler will make use of latency information.
+   bool NeedLatency;
++
++  // Target unfolding may CSE into an existing queued SDNode and lower its
++  // IROrder, including on early-return paths. Invalidate before the callback.
++  uint64_t SourceOrderMutationEpoch = 0;
+ 
+   /// AvailableQueue - The priority queue to use for the available SUnits.
+   SchedulingPriorityQueue *AvailableQueue;
+@@ -206,6 +216,9 @@
+   void Schedule() override;
+ 
+   ScheduleHazardRecognizer *getHazardRec() { return HazardRec; }
++  uint64_t getSourceOrderMutationEpoch() const {
++    return SourceOrderMutationEpoch;
++  }
+ 
+   /// IsReachable - Checks if SU is reachable from TargetSU.
+   bool IsReachable(const SUnit *SU, const SUnit *TargetSU) {
+@@ -973,6 +986,7 @@
+ 
+ /// TryUnfold - Attempt to unfold
+ SUnit *ScheduleDAGRRList::TryUnfoldSU(SUnit *SU) {
++  ++SourceOrderMutationEpoch;
+   SDNode *N = SU->getNode();
+   // Use while over if to ease fall through.
+   SmallVector<SDNode *, 2> NewNodes;
+@@ -1701,6 +1715,19 @@
+ protected:
+   std::vector<SUnit *> Queue;
+   unsigned CurQueueId = 0;
++  std::unique_ptr<source_order_detail::PrefixIndex> SourcePrefix;
++  uint64_t VerifiedPops = 0, IndexedPops = 0, IndexedCandidates = 0;
++
++  uint64_t sourceKey(const SUnit *SU) const {
++    return source_order_detail::PrefixIndex::key(SU->isScheduleLow,
++                                                getNodeOrdering(SU));
++  }
++  void sourceQueueChanged(unsigned Changed, size_t OldSize) {
++    if (SrcOrder && SourcePrefix)
++      SourcePrefix->changed(Queue, Changed, OldSize,
++          scheduleDAG->getSourceOrderMutationEpoch(),
++          [this](SUnit *SU) { return sourceKey(SU); });
++  }
+   bool TracksRegPressure;
+   bool SrcOrder;
+ 
+@@ -1744,6 +1771,13 @@
+     }
+   }
+ 
++  ~RegReductionPQBase() override {
++    if (SrcOrder && VerifySourcePrefix && VerifiedPops)
++      errs() << "source-prefix-verify: pops=" << VerifiedPops
++             << " indexed=" << IndexedPops
++             << " candidates=" << IndexedCandidates << "\n";
++  }
++
+   void setScheduleDAG(ScheduleDAGRRList *scheduleDag) {
+     scheduleDAG = scheduleDag;
+   }
+@@ -1759,6 +1793,7 @@
+   void updateNode(const SUnit *SU) override;
+ 
+   void releaseState() override {
++    if (SourcePrefix) SourcePrefix->invalidate();
+     SUnits = nullptr;
+     SethiUllmanNumbers.clear();
+     llvm::fill(RegPressure, 0);
+@@ -1777,16 +1812,21 @@
+   void push(SUnit *U) override {
+     assert(!U->NodeQueueId && "Node in the queue already");
+     U->NodeQueueId = ++CurQueueId;
++    size_t OldSize = Queue.size();
+     Queue.push_back(U);
++    sourceQueueChanged(OldSize, OldSize);
+   }
+ 
+   void remove(SUnit *SU) override {
+     assert(!Queue.empty() && "Queue is empty!");
+     assert(SU->NodeQueueId != 0 && "Not in queue!");
+     std::vector<SUnit *>::iterator I = llvm::find(Queue, SU);
++    unsigned Changed = I - Queue.begin();
++    size_t OldSize = Queue.size();
+     if (I != std::prev(Queue.end()))
+       std::swap(*I, Queue.back());
+     Queue.pop_back();
++    sourceQueueChanged(Changed, OldSize);
+     SU->NodeQueueId = 0;
+   }
+ 
+@@ -1870,6 +1910,64 @@
+   SUnit *pop() override {
+     if (Queue.empty()) return nullptr;
+ 
++    if constexpr (std::is_same_v<SF, src_ls_rr_sort>) {
++#ifndef NDEBUG
++      if (scheduleDAG->StressSched) {
++        if (SourcePrefix) SourcePrefix->invalidate();
++        SUnit *V = popFromQueue(Queue, Picker, scheduleDAG);
++        V->NodeQueueId = 0;
++        return V;
++      }
++#endif
++      unsigned E = std::min<size_t>(Queue.size(), 1000);
++      unsigned Expected = 0;
++      if (VerifySourcePrefix)
++        for (unsigned I = 1; I < E; ++I)
++          if (Picker(Queue[Expected], Queue[I]))
++            Expected = I;
++      unsigned Best = 0;
++      // Do not pay tree construction/update cost for small ready sets.
++      if (E < 128) {
++        if (SourcePrefix) SourcePrefix->invalidate();
++        for (unsigned I = 1; I < E; ++I)
++          if (Picker(Queue[Best], Queue[I]))
++            Best = I;
++      } else {
++        if (!SourcePrefix)
++          SourcePrefix = std::make_unique<source_order_detail::PrefixIndex>();
++        SourcePrefix->prepare(Queue, scheduleDAG->getSourceOrderMutationEpoch(),
++            [this](SUnit *SU) { return sourceKey(SU); });
++        if (SourcePrefix->winningCount() > E / 2) {
++          // Broad ties need the original ordered dynamic fold anyway.
++          for (unsigned I = 1; I < E; ++I)
++            if (Picker(Queue[Best], Queue[I]))
++              Best = I;
++        } else {
++          Best = E;
++          SourcePrefix->forEachWinner([&](unsigned I) {
++            if (Best == E || Picker(Queue[Best], Queue[I]))
++              Best = I;
++          });
++          if (VerifySourcePrefix) {
++            ++IndexedPops;
++            IndexedCandidates += SourcePrefix->winningCount();
++          }
++        }
++      }
++      if (VerifySourcePrefix) {
++        ++VerifiedPops;
++        if (Best != Expected)
++          report_fatal_error("Source-order prefix changed the original winner");
++      }
++      size_t OldSize = Queue.size();
++      SUnit *V = Queue[Best];
++      if (Best + 1 != Queue.size())
++        std::swap(Queue[Best], Queue.back());
++      Queue.pop_back();
++      sourceQueueChanged(Best, OldSize);
++      V->NodeQueueId = 0;
++      return V;
++    }
+     SUnit *V = popFromQueue(Queue, Picker, scheduleDAG);
+     V->NodeQueueId = 0;
+     return V;
+@@ -1992,6 +2090,7 @@
+ }
+ 
+ void RegReductionPQBase::addNode(const SUnit *SU) {
++  if (SourcePrefix) SourcePrefix->invalidate();
+   unsigned SUSize = SethiUllmanNumbers.size();
+   if (SUnits->size() > SUSize)
+     SethiUllmanNumbers.resize(SUSize*2, 0);
+@@ -1999,6 +2098,7 @@
+ }
+ 
+ void RegReductionPQBase::updateNode(const SUnit *SU) {
++  if (SourcePrefix) SourcePrefix->invalidate();
+   SethiUllmanNumbers[SU->NodeNum] = 0;
+   CalcNodeSethiUllmanNumber(SU, SethiUllmanNumbers);
+ }
+@@ -2775,6 +2875,7 @@
+ }
+ 
+ void RegReductionPQBase::initNodes(std::vector<SUnit> &sunits) {
++  if (SourcePrefix) SourcePrefix->invalidate();
+   SUnits = &sunits;
+   // Add pseudo dependency edges for two-address nodes.
+   if (!Disable2AddrHack)
+--- /dev/null
++++ b/llvm/lib/CodeGen/SelectionDAG/SourceOrderPrefix.h
+@@ -0,0 +1,109 @@
++//===- SourceOrderPrefix.h - Source-order ready prefix index -----*- C++ -*-===//
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++// Private implementation helper: indexes only a queue's static source category.
++// No dynamic scheduling winner is retained across pops.
++#ifndef LLVM_PRIVATE_SOURCE_ORDER_PREFIX_H
++#define LLVM_PRIVATE_SOURCE_ORDER_PREFIX_H
++#include <algorithm>
++#include <array>
++#include <cassert>
++#include <cstddef>
++#include <cstdint>
++
++namespace llvm {
++namespace source_order_detail {
++class PrefixIndex {
++  static constexpr unsigned Leaves = 1024;
++  std::array<uint64_t, 2 * Leaves> Keys{};
++  std::array<unsigned, 2 * Leaves> Counts{};
++  uint64_t Epoch = 0;
++  unsigned Size = 0;
++  bool Valid = false;
++
++  void set(unsigned I, uint64_t K) {
++    assert(I < Limit);
++    I += Leaves;
++    Keys[I] = K;
++    Counts[I] = K != 0;
++    while ((I /= 2) != 0) {
++      Keys[I] = std::max(Keys[2 * I], Keys[2 * I + 1]);
++      Counts[I] = (Keys[2 * I] == Keys[I] ? Counts[2 * I] : 0) +
++                  (Keys[2 * I + 1] == Keys[I] ? Counts[2 * I + 1] : 0);
++    }
++  }
++
++  template <class Fn> void visit(unsigned I, uint64_t K, Fn &F) const {
++    if (Keys[I] != K || !Counts[I])
++      return;
++    if (I >= Leaves) {
++      F(I - Leaves);
++      return;
++    }
++    visit(2 * I, K, F);
++    visit(2 * I + 1, K, F);
++  }
++
++public:
++  static constexpr unsigned Limit = 1000;
++  static uint64_t key(bool ScheduleLow, unsigned IROrder) {
++    return (uint64_t(ScheduleLow) << 33) |
++           (IROrder ? uint64_t(IROrder) : uint64_t(1) << 32);
++  }
++  void invalidate() { Valid = false; }
++
++  template <class Q, class Key> void prepare(const Q &Queue, uint64_t E, Key K) {
++    unsigned N = std::min<size_t>(Queue.size(), Limit);
++    if (Valid && Epoch == E && Size == N)
++      return;
++    Keys.fill(0);
++    Counts.fill(0);
++    for (unsigned I = 0; I < N; ++I) {
++      Keys[Leaves + I] = K(Queue[I]);
++      assert(Keys[Leaves + I] != 0);
++      Counts[Leaves + I] = 1;
++    }
++    for (unsigned I = Leaves - 1; I != 0; --I) {
++      Keys[I] = std::max(Keys[2 * I], Keys[2 * I + 1]);
++      Counts[I] = (Keys[2 * I] == Keys[I] ? Counts[2 * I] : 0) +
++                  (Keys[2 * I + 1] == Keys[I] ? Counts[2 * I + 1] : 0);
++    }
++    Size = N;
++    Epoch = E;
++    Valid = true;
++  }
++
++  // Queue mutation is already complete. A swap/pop changes at most two
++  // prefix positions; entries after the exact 1000-element window stay absent.
++  template <class Q, class Key>
++  void changed(const Q &Queue, unsigned Changed, size_t OldSize, uint64_t E,
++               Key K) {
++    if (!Valid || Epoch != E) {
++      invalidate();
++      return;
++    }
++    unsigned Old = std::min<size_t>(OldSize, Limit);
++    unsigned Now = std::min<size_t>(Queue.size(), Limit);
++    if (Changed < Now)
++      set(Changed, K(Queue[Changed]));
++    if (Old > Now)
++      set(Old - 1, 0);
++    if (Now > Old && Changed != Now - 1)
++      set(Now - 1, K(Queue[Now - 1]));
++    Size = Now;
++  }
++
++  unsigned winningCount() const { assert(Valid); return Counts[1]; }
++  template <class Fn> void forEachWinner(Fn F) const {
++    assert(Valid && Size);
++    visit(1, Keys[1], F);
++  }
++};
++} // namespace source_order_detail
++} // namespace llvm
++#endif

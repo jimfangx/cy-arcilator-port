@@ -8,6 +8,8 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/GlobalIFunc.h"
 #include "llvm/IR/Instructions.h"
@@ -17,6 +19,7 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Plugins/PassPlugin.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Error.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/Path.h"
@@ -28,6 +31,59 @@
 #include <vector>
 using namespace llvm;
 namespace {
+// DataLayout::operator== compares its integer-specification vectors. An
+// explicit default such as i1:8 creates an extra breakpoint even though the
+// canonical i8:8 fallback gives exactly the same alignment. Remove a rule only
+// after proving both ABI and preferred alignment unchanged without it.
+// Integer alignment lookup uses the next specification at/above a width (or
+// the largest specification). Removing width N can therefore affect only the
+// interval ending at N (unbounded above if N is largest), and all widths in
+// that interval select the same rule. Testing N proves that interval unchanged. Other
+// layout fields are not normalized and must still pass LLVM's full equality.
+DataLayout normalizeRedundantIntegerSpecs(const DataLayout &layout,
+                                         LLVMContext &context,
+                                         json::Array &removed) {
+  SmallVector<std::string> parts;
+  SmallVector<StringRef> original;
+  StringRef(layout.getStringRepresentation()).split(original, '-');
+  for (StringRef part : original)
+    parts.push_back(part.str());
+  DataLayout current(layout);
+  for (unsigned i = 0; i < parts.size();) {
+    StringRef part(parts[i]);
+    unsigned width = 0;
+    if (!part.consume_front("i") ||
+        part.split(':').first.getAsInteger(10, width) || !width ||
+        width > IntegerType::MAX_INT_BITS) {
+      ++i;
+      continue;
+    }
+    std::string candidate;
+    for (unsigned j = 0; j < parts.size(); ++j)
+      if (j != i) {
+        if (!candidate.empty())
+          candidate += '-';
+        candidate += parts[j];
+      }
+    auto parsed = DataLayout::parse(candidate);
+    if (!parsed) {
+      consumeError(parsed.takeError());
+      ++i;
+      continue;
+    }
+    Type *type = IntegerType::get(context, width);
+    if (current.getABITypeAlign(type) != parsed->getABITypeAlign(type) ||
+        current.getPrefTypeAlign(type) != parsed->getPrefTypeAlign(type)) {
+      ++i;
+      continue;
+    }
+    removed.push_back(parts[i]);
+    current = *parsed;
+    parts.erase(parts.begin() + i);
+  }
+  return current;
+}
+
 uint64_t work(const Function &function, const DataLayout &layout) {
   uint64_t cost = 1;
   auto words = [&](Type *type) -> uint64_t {
@@ -89,7 +145,20 @@ struct SplitCodegen : RequiredPassInfoMixin<SplitCodegen> {
       }
       return true;
     };
+    const std::string originalLayout = module.getDataLayoutStr();
+    bool canonicalLayout = false;
+    std::string targetLayout;
+    json::Array removedOriginal, removedTarget;
     auto manifest = [&](json::Object data) {
+      if (!targetLayout.empty()) {
+        data["original_data_layout"] = originalLayout;
+        data["target_data_layout"] = targetLayout;
+        data["canonical_data_layout_applied"] = canonicalLayout;
+        data["data_layout_equivalence"] =
+            "LLVM-DataLayout-operator==-after-proven-redundant-integer-spec-removal";
+        data["redundant_original_integer_specs"] = std::move(removedOriginal);
+        data["redundant_target_integer_specs"] = std::move(removedTarget);
+      }
       std::error_code error;
       raw_fd_ostream file(path("partitions.json"), error, sys::fs::OF_Text);
       if (error) {
@@ -109,6 +178,28 @@ struct SplitCodegen : RequiredPassInfoMixin<SplitCodegen> {
                                    {"file", "part-0.bc"}, {"work", 0}}}}});
       return PreservedAnalyses::all();
     };
+    // ThinLTO compares the input spelling with its target-machine layout.
+    // CIRCT can spell default alignments explicitly; rewriting that spelling
+    // is legal only when LLVM itself proves the complete layouts equivalent.
+    // The ordinary post-O3 splitter leaves the layout untouched.
+    if (const char *layout = std::getenv("CHIPYARD_THIN_TARGET_LAYOUT")) {
+      targetLayout = layout;
+      if (targetLayout.empty() || originalLayout.empty())
+        return fallback("ThinLTO requires a concrete target data layout");
+      auto parsed = DataLayout::parse(targetLayout);
+      if (!parsed) {
+        consumeError(parsed.takeError());
+        return fallback("ThinLTO target data layout is malformed");
+      }
+      auto normalizedOriginal = normalizeRedundantIntegerSpecs(
+          module.getDataLayout(), module.getContext(), removedOriginal);
+      auto normalizedTarget = normalizeRedundantIntegerSpecs(
+          *parsed, module.getContext(), removedTarget);
+      if (normalizedOriginal != normalizedTarget)
+        return fallback("ThinLTO target data layout is not semantically equivalent");
+      canonicalLayout = targetLayout != originalLayout;
+      module.setDataLayout(*parsed);
+    }
     Triple triple = module.getTargetTriple();
     if (triple.str().empty())
       triple = Triple(sys::getDefaultTargetTriple());

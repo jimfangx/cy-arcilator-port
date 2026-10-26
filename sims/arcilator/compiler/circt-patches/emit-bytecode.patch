@@ -1,0 +1,45 @@
+--- a/tools/arcilator/arcilator.cpp
++++ b/tools/arcilator/arcilator.cpp
+@@ -247,10 +247,18 @@
+     runUntilValues, llvm::cl::init(UntilEnd), llvm::cl::cat(mainCategory));
+ 
+ // Options to control the output format.
+-enum OutputFormat { OutputMLIR, OutputLLVM, OutputRunJIT, OutputDisabled };
++enum OutputFormat {
++  OutputMLIR,
++  OutputBytecode,
++  OutputLLVM,
++  OutputRunJIT,
++  OutputDisabled
++};
+ static llvm::cl::opt<OutputFormat> outputFormat(
+     llvm::cl::desc("Specify output format"),
+     llvm::cl::values(clEnumValN(OutputMLIR, "emit-mlir", "Emit MLIR dialects"),
++                     clEnumValN(OutputBytecode, "emit-bytecode",
++                                "Emit MLIR bytecode"),
+                      clEnumValN(OutputLLVM, "emit-llvm", "Emit LLVM"),
+                      clEnumValN(OutputRunJIT, "run",
+                                 "Run the simulation and emit its output"),
+@@ -700,7 +708,11 @@
+ 
+   // Handle MLIR output.
+   if (runUntilBefore != UntilEnd || runUntilAfter != UntilEnd ||
+-      outputFormat == OutputMLIR) {
++      outputFormat == OutputMLIR || outputFormat == OutputBytecode) {
++    if (outputFormat == OutputBytecode) {
++      auto outputTimer = ts.nest("Write MLIR bytecode");
++      return writeBytecodeToFile(module.get(), outputFile.value()->os());
++    }
+     OpPrintingFlags printingFlags;
+     // Only set the debug info flag to true in order to not overwrite MLIR
+     // printer CLI flags when the custom debug info option is not set.
+--- a/tools/arcilator/CMakeLists.txt
++++ b/tools/arcilator/CMakeLists.txt
+@@ -34,6 +34,7 @@
+   CIRCTVerif
+   MLIRArithDialect
+   MLIRBuiltinToLLVMIRTranslation
++  MLIRBytecodeWriter
+   MLIRControlFlowDialect
+   MLIRDLTIDialect
+   MLIRFuncDialect

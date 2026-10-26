@@ -84,6 +84,9 @@ SCALAR_CALL = re.compile(
 SCALAR_ZEXT = re.compile(
     r'^\s*(%[-a-zA-Z$._0-9]+) = zext i([0-9]+) '
     r'(%[-a-zA-Z$._0-9]+|-?[0-9]+) to i([0-9]+)\s*$')
+# Most model lines contain no helper ABI. Check required literals before
+# invoking the exact recognizers while retaining their validation rules.
+SCALAR_SYMBOL = re.compile(r'@(chipyard_arc_private_scalar_[0-9]+_[0-9]+)\(')
 
 
 def scalar_wrapper(bits, small):
@@ -128,7 +131,8 @@ def lower(path):
     known, occupied = set(), set()
     with path.open() as source:
         for line in source:
-            match = DECLARATION.fullmatch(line)
+            match = (DECLARATION.fullmatch(line)
+                     if line.startswith('declare i') else None)
             if match:
                 bits, name, mode, suffix = match.groups()
                 if bits != suffix or int(bits) <= 1024:
@@ -137,7 +141,8 @@ def lower(path):
                         line.strip())
                 if mode == '0':
                     known.add(name)
-            occupied.update(re.findall(r'@(chipyard_arc_private_scalar_[0-9]+_[0-9]+)\(', line))
+            if '@chipyard_arc_private_scalar_' in line:
+                occupied.update(SCALAR_SYMBOL.findall(line))
     values, pairs = {}, set()
     try:
         with path.open() as source, tempfile.NamedTemporaryFile(
@@ -148,12 +153,14 @@ def lower(path):
                 if line.startswith('define '):
                     values.clear()
                 if known:
-                    zext = SCALAR_ZEXT.fullmatch(line)
+                    zext = (SCALAR_ZEXT.fullmatch(line)
+                            if ' = zext i' in line else None)
                     if zext:
                         value, small, operand, width = zext.groups()
                         if 1 <= int(small) <= 64 and int(width) > 1024:
                             values[value] = (int(width), int(small), operand)
-                    call = SCALAR_CALL.fullmatch(line.rstrip('\n'))
+                    call = (SCALAR_CALL.fullmatch(line.rstrip('\n'))
+                            if '@chipyard_arc_wide_shift_0_' in line else None)
                     if call:
                         prefix, width, data, amount, tail = call.groups()
                         width = int(width)
@@ -170,7 +177,8 @@ def lower(path):
                             pairs.add((width, small))
                             line = (prefix + f'call i{width} @{narrow}('
                                     f'i{small} {data}, i{width} {amount})' + tail + '\n')
-                match = DECLARATION.fullmatch(line)
+                match = (DECLARATION.fullmatch(line)
+                         if line.startswith('declare i') else None)
                 if match:
                     bits, name, mode, suffix = match.groups()
                     # The first pass already validated the complete signature.

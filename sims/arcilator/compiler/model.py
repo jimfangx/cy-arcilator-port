@@ -19,6 +19,7 @@ def boolean(value):
 
 def compile_model(args):
     late_wide = getattr(args, 'late_wide_arithmetic', True)
+    fused_pipeline = getattr(args, 'fused_pipeline', False)
     state_partitioning = getattr(args, 'state_partitioning', False)
     state_report = getattr(args, 'state_partition_report', None)
     if state_partitioning:
@@ -106,13 +107,21 @@ def compile_model(args):
     def run(*command):
         subprocess.run([str(value) for value in command], check=True)
 
-    def transform(source, target, pipeline):
+    def run_transform(source, target, pipeline):
         run(args.circt_opt, work / source, load, load_convergence,
             load_sampling, load_idle, load_arrays, load_properties, load_i0,
             load_compact, load_plusargs, load_formats, load_arc_llvm, load_startup,
             *wide_load, *state_load,
             '--pass-pipeline=builtin.module(' + pipeline + ')',
             '--emit-bytecode', '-o', work / target)
+
+    transforms = []
+
+    def transform(source, target, pipeline):
+        if fused_pipeline and target not in ('state.mlir', 'allocated.mlirbc'):
+            transforms.append((source, target, pipeline))
+        else:
+            run_transform(source, target, pipeline)
 
     # The stock state-allocation pipeline removes singleton arrays without
     # adapting every array_concat. Earlier canonicalization can recreate those
@@ -136,7 +145,9 @@ def compile_model(args):
         '},chipyard-record-output-effects,chipyard-native-dpi-abi,chipyard-coalesce-dpi,chipyard-seed-dpi-outputs)',
         '--emit-bytecode', '-o', work / 'imports.mlirbc')
     run(args.arcilator, work / 'imports.mlirbc', *flags,
-        '--until-after=arc-conv', '--emit-mlir', '-o',
+        '--until-after=arc-conv',
+        '--emit-bytecode' if getattr(args, 'conversion_bytecode', False)
+        else '--emit-mlir', '-o',
         work / 'converted.mlirbc')
     startup_inputs = []
     if args.partition is not None:
@@ -252,6 +263,17 @@ def compile_model(args):
         source, 'llvm.mlirbc',
         'arc-infer-context,chipyard-lower-arc-to-llvm,reconcile-unrealized-casts,chipyard-finalize-dpi-abi,cse,arc-canonicalizer,chipyard-compact-llvm-structs'
     )
+    if fused_pipeline:
+        # Preserve fresh contexts after Arc optimization and state allocation:
+        # retaining their dead attributes through lowering increases its cost.
+        # Run only array lowering, optional outlining and LLVM conversion in
+        # one process, with the exact same pass order and options. This avoids
+        # serializing and reparsing their shared intermediate module.
+        # The staged path remains available for intermediate diagnostics.
+        assert all(left[1] == right[0]
+                   for left, right in zip(transforms, transforms[1:]))
+        run_transform(transforms[0][0], transforms[-1][1],
+                      ','.join(stage[2] for stage in transforms))
     run(args.mlir_translate, '--mlir-to-llvmir', work / 'llvm.mlirbc', '-o',
         args.output)
     # Keep failed stages for diagnosis. Successful builds retain their LLVM
@@ -279,6 +301,12 @@ def main():
     parser.add_argument('--output-convergence', type=boolean, default=True)
     parser.add_argument('--idle-clocks', type=boolean, default=True)
     parser.add_argument('--stable-evaluator', type=boolean, default=True)
+    parser.add_argument(
+        '--conversion-bytecode', type=boolean, default=False,
+        help='emit Arc conversion as bytecode; requires matching driver support')
+    parser.add_argument(
+        '--fused-pipeline', type=boolean, default=False,
+        help='combine array lowering, outlining and LLVM conversion; false retains intermediate stages')
     parser.add_argument(
         '--state-partitioning', type=boolean, default=False,
         help='plan state versions before allocation and outline proven regions')

@@ -20,7 +20,7 @@ def available_jobs():
 
 
 def parallel_codegen(bitcode, output, llvm_opt, llc, cache, cxx, library,
-                     opt_level, jobs, work):
+                     opt_level, jobs, work, llc_flags=()):
     """Partition after optimization, restoring private bindings after linking."""
     splitter = plugin(llvm_opt, cxx, cache,
                       Path(__file__).with_name('SplitCodegen.cpp'))
@@ -55,7 +55,7 @@ def parallel_codegen(bitcode, output, llvm_opt, llc, cache, cxx, library,
             ], check=True)
         subprocess.run([
             str(llc), '-O' + opt_level, '-relocation-model=pic',
-            '-filetype=obj',
+            '-filetype=obj', *llc_flags,
             str(lowered), '-o',
             str(obj)
         ],
@@ -116,12 +116,22 @@ def compile_model(source,
                   opt_flags='',
                   distribute_wide_stores=False,
                   vector_packing=False,
-                  parallel_stock=False):
+                  parallel_stock=False,
+                  state_partitioning=False,
+                  native_preparation=False,
+                  early_inline=True,
+                  share_procedures=True,
+                  llc_flags=''):
     if jobs < 1:
         raise ValueError('jobs must be positive')
     if pipeline not in ('bounded', 'stock'):
         raise ValueError('pipeline must be bounded or stock')
+    if native_preparation and state_partitioning:
+        raise ValueError('native preparation requires whole-module optimization')
     extra_flags = shlex.split(opt_flags)
+    extra_llc_flags = shlex.split(llc_flags)
+    if state_partitioning and extra_llc_flags:
+        raise ValueError('extra llc flags require whole-module optimization')
     bitcode = bitcode or output.with_suffix('.bc')
     paths = [path.resolve() for path in (source, output, bitcode)]
     if len(set(paths)) != 3:
@@ -129,10 +139,17 @@ def compile_model(source,
     output.parent.mkdir(parents=True, exist_ok=True)
     bitcode.parent.mkdir(parents=True, exist_ok=True)
     requested_jobs = jobs
-    if pipeline == 'stock' and not parallel_stock:
+    if pipeline == 'stock' and not (parallel_stock or state_partitioning):
         jobs = 1
     libraries = []
     library = None
+    if native_preparation:
+        names = ['NativeArithmetic.cpp']
+        if share_procedures:
+            names.append('SharedProcedures.cpp')
+        libraries.extend(plugin(llvm_opt, cxx, cache,
+                                Path(__file__).with_name(name))
+                         for name in names)
     if pipeline == 'bounded':
         library = plugin(llvm_opt, cxx, cache,
                          Path(__file__).with_name('Codegen.cpp'))
@@ -166,6 +183,16 @@ def compile_model(source,
     os.close(fd)
     temporary_bitcode = Path(name)
     temporary_object = work / 'model.o'
+    preparation = []
+    if native_preparation:
+        if early_inline:
+            preparation += ['require<profile-summary>', 'cgscc(inline)']
+        if share_procedures:
+            preparation.append('chipyard-share-procedure-values')
+        if abi_buffers:
+            preparation += ['chipyard-buffer-large-returns',
+                            'chipyard-buffer-large-arguments']
+        preparation += ['chipyard-native-arithmetic', 'verify']
     passes = []
     if pipeline == 'bounded':
         passes += [
@@ -193,36 +220,45 @@ def compile_model(source,
         'requested_jobs': requested_jobs,
         'pipeline': pipeline,
         'parallel_stock': parallel_stock,
+        'state_partitioning': state_partitioning,
         'abi_buffers': abi_buffers,
         'distribute_wide_stores': distribute_wide_stores,
         'vector_packing': vector_packing,
         'opt_flags': extra_flags
     }
+    if native_preparation:
+        timings.update(native_preparation=True, early_inline=early_inline,
+                       share_procedures=share_procedures)
+    if extra_llc_flags:
+        timings['llc_flags'] = extra_llc_flags
     try:
-        started = time.monotonic()
-        subprocess.run([
-            str(llvm_opt), *['-load-pass-plugin=' + str(p) for p in libraries],
-            '-passes=' + ','.join(passes), *extra_flags,
-            str(source), '-o',
-            str(temporary_bitcode)
-        ],
-                       check=True)
-        timings['opt_seconds'] = time.monotonic() - started
-        started = time.monotonic()
-        if jobs == 1:
-            subprocess.run([
-                str(llc), '-O' + llc_opt_level, '-relocation-model=pic',
-                '-filetype=obj',
-                str(temporary_bitcode), '-o',
-                str(temporary_object)
-            ],
-                           check=True)
-            timings['codegen_seconds'] = time.monotonic() - started
+        thin = None
+        if state_partitioning and pipeline == 'stock' and jobs > 1:
+            from thin_codegen import compile_partitions
+            # The graph pass has retained global pure sharing before cuts.
+            # LLVM ThinLTO carries summaries/imports across compiler units;
+            # plain independent O3 would lose those interprocedural facts.
+            post = []
+            if abi_buffers:
+                post += ['chipyard-buffer-large-returns',
+                         'chipyard-buffer-large-arguments']
+            if distribute_wide_stores:
+                post.append('chipyard-distribute-wide-stores')
+            if vector_packing:
+                post.append('chipyard-vector-packing')
+            thin, fallback = compile_partitions(
+                source, temporary_object, temporary_bitcode, llvm_opt, cache,
+                cxx, opt_level, llc_opt_level, jobs, work, extra_flags,
+                libraries, post)
+            if fallback:
+                timings['thinlto_fallback'] = fallback
+        if thin is not None:
+            timings.update(thin)
         else:
-            timings.update(
-                parallel_codegen(temporary_bitcode, temporary_object, llvm_opt,
-                                 llc, cache, cxx, library, llc_opt_level, jobs,
-                                 work))
+            _compile_whole(source, temporary_bitcode, temporary_object,
+                           llvm_opt, llc, cache, cxx, libraries, passes,
+                           extra_flags, llc_opt_level, jobs, work, library,
+                           timings, extra_llc_flags, preparation)
     except BaseException:
         # A failed compiler must preserve the last complete model and retain
         # its failing IR/object for diagnosis; another build gets unique paths.
@@ -237,6 +273,47 @@ def compile_model(source,
         report.write_text(json.dumps(timings, indent=2) + '\n')
     print('Native LLVM code generation: ' + json.dumps(timings), flush=True)
     shutil.rmtree(work)
+
+
+def _compile_whole(source, temporary_bitcode, temporary_object, llvm_opt, llc,
+                   cache, cxx, libraries, passes, extra_flags, llc_opt_level,
+                   jobs, work, library, timings, llc_flags=(), preparation=()):
+    if preparation:
+        # A fresh context keeps preparation analyses and transient constants
+        # out of O3. Binary IR avoids the old large text write/scan/reparse;
+        # this invocation-local handoff is always rebuilt and then discarded.
+        prepared = work / 'prepared.bc'
+        started = time.monotonic()
+        subprocess.run([
+            str(llvm_opt), *['-load-pass-plugin=' + str(p) for p in libraries],
+            '-passes=' + ','.join(preparation), str(source), '-o', str(prepared)
+        ], check=True)
+        timings['preparation_seconds'] = time.monotonic() - started
+        source = prepared
+    started = time.monotonic()
+    subprocess.run([
+        str(llvm_opt), *['-load-pass-plugin=' + str(p) for p in libraries],
+        '-passes=' + ','.join(passes), *extra_flags,
+        str(source), '-o',
+        str(temporary_bitcode)
+    ],
+                   check=True)
+    timings['opt_seconds'] = time.monotonic() - started
+    started = time.monotonic()
+    if jobs == 1:
+        subprocess.run([
+            str(llc), '-O' + llc_opt_level, '-relocation-model=pic',
+            '-filetype=obj', *llc_flags,
+            str(temporary_bitcode), '-o',
+            str(temporary_object)
+        ],
+                       check=True)
+        timings['codegen_seconds'] = time.monotonic() - started
+    else:
+        timings.update(
+            parallel_codegen(temporary_bitcode, temporary_object, llvm_opt,
+                             llc, cache, cxx, library, llc_opt_level, jobs,
+                             work, llc_flags))
 
 
 def main():
@@ -269,9 +346,21 @@ def main():
         action='store_true',
         help='compile independent optimized stock LLVM functions concurrently')
     parser.add_argument(
+        '--state-partitioning', action='store_true',
+        help='optimize state graph partitions using parallel ThinLTO summaries')
+    parser.add_argument(
+        '--native-preparation', action='store_true',
+        help='prepare original LLVM arithmetic/ABIs in the optimization process')
+    parser.add_argument('--no-early-inline', dest='early_inline',
+                        action='store_false')
+    parser.add_argument('--no-share-procedures', dest='share_procedures',
+                        action='store_false')
+    parser.add_argument(
         '--opt-flags',
         default='',
         help='extra opt arguments, including host target/CPU controls')
+    parser.add_argument('--llc-flags', default='',
+                        help='extra llc arguments, including compiler worker controls')
     parser.add_argument(
         '--jobs',
         type=int,
@@ -305,7 +394,12 @@ def main():
                       opt_flags=args.opt_flags,
                       distribute_wide_stores=args.distribute_wide_stores,
                       vector_packing=args.vector_packing,
-                      parallel_stock=args.parallel_stock)
+                      parallel_stock=args.parallel_stock,
+                      state_partitioning=args.state_partitioning,
+                      native_preparation=args.native_preparation,
+                      early_inline=args.early_inline,
+                      share_procedures=args.share_procedures,
+                      llc_flags=args.llc_flags)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.exit(1, f'Native LLVM code generation: {error}\n')
 

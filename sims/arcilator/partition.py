@@ -14,23 +14,35 @@ import tempfile
 from contextlib import ExitStack
 from pathlib import Path
 from compiler.partition import plugin
+from compiler.text_spans import UnchangedLines, sparse_text
 
 IDENT = r'(?:"(?:[^"\\]|\\.)*"|[\w.$-]+)'
 SSA = r'%[\w.$-]+(?:#\d+)?'
 QUOTED = r'("(?:[^"\\]|\\.)*")'
+_RESULT = SSA + r'(?::\d+)?'
+_OPCODE = re.compile(
+    r'\s*(?:' + _RESULT + r'(?:,\s*' + _RESULT + r')*\s*=\s*)?([\w.]+)')
+_FORMATS = re.compile(rb'sim\.fmt\.')
+_SPECIAL = re.compile(
+    rb'sim\.proc\.print|chipyard\.native_print|comb\.sh(?:l|ru|rs)|'
+    rb'reset async |verif\.clocked_(?:assert|assume)|sim\.terminate')
+_SPECIAL_NATIVE = re.compile(_SPECIAL.pattern + rb'|hw\.instance')
+_CLOCK_CASTS = re.compile(rb'seq\.(?:from_clock|to_clock)')
+_PHASE_CLOCKS = re.compile(rb'seq\.firreg|seq\.firmem\.|sim\.triggered ')
+_BOUNDARIES = re.compile(rb'hw\.instance|hw\.output')
+_ROOT_CLOCK = re.compile(rb'%clock')
 
 
 def opcode(line):
     """Read the operation token, without inspecting string-valued attributes."""
-    result = SSA + r'(?::\d+)?'
-    match = re.match(
-        r'\s*(?:' + result + r'(?:,\s*' + result + r')*\s*=\s*)?([\w.]+)',
-        line)
+    match = _OPCODE.match(line)
     return match[1] if match else ''
 
 
 def map_code(text, transform):
     """Transform assembly outside string literals, which are opaque payloads."""
+    if '"' not in text:
+        return ''.join((transform(text),))
     return ''.join(part if i % 2 else transform(part)
                    for i, part in enumerate(re.split(QUOTED, text)))
 
@@ -158,8 +170,9 @@ def procedural_guard(condition, statements, tag):
 class FileLines:
     """Repeatable line iteration over a byte range of canonical MLIR assembly."""
 
-    def __init__(self, path, start=0, end=None):
+    def __init__(self, path, start=0, end=None, sparse=False):
         self.path, self.start, self.end = Path(path), start, end
+        self.sparse = sparse
 
     def splitlines(self):
         with self.path.open('rb') as stream:
@@ -172,12 +185,36 @@ class FileLines:
                 position += len(line)
                 yield line.decode('utf-8').rstrip('\r\n')
 
+    def candidates(self, pattern):
+        if self.sparse:
+            with sparse_text(self.path, self.start, self.end) as source:
+                if source is not None:
+                    yield from source.candidates(pattern)
+                    return
+        yield from self.splitlines()
+
+    def events(self, pattern):
+        if self.sparse:
+            with sparse_text(self.path, self.start, self.end) as source:
+                if source is not None:
+                    yield from source.events(pattern)
+                    return
+        yield from self.splitlines()
+
+    def reserved_prefixes(self, prefix):
+        if self.sparse:
+            with sparse_text(self.path, self.start, self.end) as source:
+                if source is not None:
+                    return source.reserved_prefixes(prefix)
+        return None
+
 
 class LineSink:
     """The append/count interface used by rewrites, backed by an output file."""
 
-    def __init__(self, path):
+    def __init__(self, path, sparse=False):
         self.path, self.count = Path(path), 0
+        self.sparse = sparse
         self.stream = self.path.open('w')
 
     def __enter__(self):
@@ -187,6 +224,10 @@ class LineSink:
         self.stream.close()
 
     def append(self, line):
+        if self.sparse:
+            if isinstance(line, UnchangedLines):
+                line.append_to(self)
+                return
         self.stream.write(line + '\n')
         self.count += 1
 
@@ -203,7 +244,7 @@ class LineSink:
 
     def close(self):
         self.stream.close()
-        return FileLines(self.path)
+        return FileLines(self.path, sparse=self.sparse)
 
 
 def root_range(path, top):
@@ -253,10 +294,11 @@ def lower_special_ops(body,
                       native_combin=False):
     """Keep asynchronous state exact and lower assertions to native callbacks."""
     if output is not None:
-        with LineSink(output) as lines:
+        sparse = isinstance(body, FileLines) and body.sparse
+        with LineSink(output, sparse=sparse) as lines:
             _lower_special_ops(body, externs, wide_helpers, lines,
                                native_combin)
-        return FileLines(output)
+        return FileLines(output, sparse=sparse)
     lines = []
     _lower_special_ops(body, externs, wide_helpers, lines, native_combin)
     return '\n'.join(lines)
@@ -269,14 +311,28 @@ def _lower_special_ops(body,
                        native_combin=False):
     groups, aggregate_results = {}, []
     formats = {}
-    reserved = set()
-    for line in body.splitlines():
-        if native_combin:
+    reserved = None
+    sparse = isinstance(body, FileLines) and body.sparse and isinstance(lines, LineSink)
+    if sparse and native_combin:
+        from compiler.native_combin import NAMESPACE_PREFIX
+        reserved = body.reserved_prefixes(NAMESPACE_PREFIX)
+    if reserved is None:
+        reserved = set()
+        source_lines = body.splitlines()
+        collect_reserved = native_combin
+    else:
+        source_lines = body.candidates(_FORMATS)
+        collect_reserved = False
+    if sparse and not native_combin:
+        source_lines = body.candidates(_FORMATS)
+    for line in source_lines:
+        if collect_reserved:
             reserved.update(re.findall(SSA, line))
         m = re.match(r'\s*(' + SSA + r') = (sim\.fmt\..*)', line)
         if m:
             formats[m[1]] = m[2]
-    source_lines = body.splitlines()
+    source_lines = (body.events(_SPECIAL_NATIVE if native_combin else _SPECIAL)
+                    if sparse else body.splitlines())
     if native_combin:
         from compiler.native_combin import lower_native_combin
         source_lines = lower_native_combin(source_lines, externs, reserved)
@@ -544,7 +600,8 @@ def prepare(args):
                    getattr(args, 'sparse_memory_min_bits', 1 << 20) if getattr(
                        args, 'native_sparse_memories', False) else None,
                    native_combin=getattr(args, 'native_combinational_models',
-                                         False))
+                                         False),
+                   sparse_preparation=getattr(args, 'sparse_preparation', False))
 
 
 def partition_flat(flat,
@@ -552,12 +609,13 @@ def partition_flat(flat,
                    top,
                    externs,
                    memory_min_bits=None,
-                   native_combin=False):
+                   native_combin=False,
+                   sparse_preparation=False):
     with tempfile.TemporaryDirectory(dir=out,
                                      prefix='partition-text-') as temporary:
         with ExitStack() as files:
             _partition_flat(flat, out, top, externs, Path(temporary), files,
-                            memory_min_bits, native_combin)
+                            memory_min_bits, native_combin, sparse_preparation)
 
 
 def _partition_flat(flat,
@@ -567,12 +625,15 @@ def _partition_flat(flat,
                     work,
                     files,
                     memory_min_bits=None,
-                    native_combin=False):
+                    native_combin=False,
+                    sparse_preparation=False):
     signature, root_start, body_start, body_end, tail_start = root_range(
         flat, top)
-    source_body = FileLines(flat, body_start, body_end)
+    source_body = FileLines(flat, body_start, body_end, sparse=sparse_preparation)
     root_clock_used = False
-    for line in source_body.splitlines():
+    for line in source_body.candidates(_ROOT_CLOCK):
+        if '%clock' not in line:
+            continue
 
         def observe(code):
             nonlocal root_clock_used
@@ -605,14 +666,14 @@ def _partition_flat(flat,
         raise ValueError(
             'top port conflicts with an Arcilator runtime control')
     body, outputs, instances = files.enter_context(
-        LineSink(work / 'native-body.mlir')), [], []
+        LineSink(work / 'native-body.mlir', sparse=sparse_preparation)), [], []
     inputs = [('arc_printf_enable', 'i1'), ('arc_stop_enable', 'i1')]
     wide_helpers = set()
     root_body = lower_special_ops(source_body, externs, wide_helpers,
                                   work / 'special-body.mlir', native_combin)
     if memory_min_bits is not None:
         from compiler.memories import lower_memories
-        memory_body = files.enter_context(LineSink(work / 'memory-body.mlir'))
+        memory_body = files.enter_context(LineSink(work / 'memory-body.mlir', sparse=sparse_preparation))
         memory_body.extend(
             lower_memories(root_body, externs, memory_min_bits).splitlines())
         root_body.path.unlink()
@@ -620,7 +681,7 @@ def _partition_flat(flat,
     # Native register clocks advance after the foreign models sample this
     # edge. Combinational evaluation uses their previous committed levels.
     from_clocks, to_clocks = {}, {}
-    for line in root_body.splitlines():
+    for line in root_body.candidates(_CLOCK_CASTS):
         if opcode(line) in ('seq.from_clock', 'seq.to_clock'):
             match = re.match(
                 r'\s*(' + SSA + r') = seq\.(from_clock|to_clock) (' + SSA +
@@ -644,8 +705,8 @@ def _partition_flat(flat,
         return value
 
     phase_clocks = {}
-    adjusted = files.enter_context(LineSink(work / 'adjusted-body.mlir'))
-    for line in root_body.splitlines():
+    adjusted = files.enter_context(LineSink(work / 'adjusted-body.mlir', sparse=sparse_preparation))
+    for line in root_body.events(_PHASE_CLOCKS):
         pattern = None
         if opcode(line) == 'seq.firreg' or opcode(line).startswith(
                 'seq.firmem.'):
@@ -675,7 +736,7 @@ def _partition_flat(flat,
         ]
         phase_info.append(dict(held=held, observed=observed))
     original_output = None
-    for line in adjusted.splitlines():
+    for line in adjusted.events(_BOUNDARIES):
         if opcode(line) != 'hw.instance':
             if line.strip().startswith('hw.output'):
                 original_output = line.strip()[len('hw.output'):].strip()
@@ -904,6 +965,8 @@ if __name__ == '__main__':
     parser.add_argument('--circt-opt', default='circt-opt')
     parser.add_argument('--cxx', default=os.environ.get('CXX', 'c++'))
     parser.add_argument('--native-sparse-memories', action='store_true')
+    parser.add_argument('--sparse-preparation', action='store_true',
+                        help='bulk-copy unchanged canonical HW text; semantic rewrites and order are unchanged')
     parser.add_argument(
         '--native-combinational-models',
         action='store_true',

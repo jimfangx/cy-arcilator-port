@@ -1,0 +1,32 @@
+--- a/llvm/lib/Transforms/Utils/Local.cpp
++++ b/llvm/lib/Transforms/Utils/Local.cpp
+@@ -3277,6 +3277,14 @@
+ unsigned llvm::replaceDominatedUsesWith(Value *From, Value *To,
+                                         DominatorTree &DT,
+                                         const BasicBlockEdge &Root) {
++  assert(From->getType() == To->getType());
++  // Every non-PHI use dominated by this edge must also be dominated by its
++  // end. If the edge does not dominate its end, only an incoming PHI use on
++  // the edge itself can qualify. Without such PHIs, no use can be replaced:
++  // avoid walking a potentially very large use list just to reject it all.
++  if (!From->use_empty() && !From->hasOneUse() && Root.getEnd()->phis().empty() &&
++      !DT.dominates(Root, Root.getEnd()))
++    return 0;
+   auto Dominates = [&](const Use &U) { return DT.dominates(Root, U); };
+   return ::replaceDominatedUsesWith(From, To, Dominates);
+ }
+@@ -3298,6 +3306,14 @@
+ unsigned llvm::replaceDominatedUsesWithIf(
+     Value *From, Value *To, DominatorTree &DT, const BasicBlockEdge &Root,
+     function_ref<bool(const Use &U, const Value *To)> ShouldReplace) {
++  assert(From->getType() == To->getType());
++  // Every non-PHI use dominated by this edge must also be dominated by its
++  // end. If the edge does not dominate its end, only an incoming PHI use on
++  // the edge itself can qualify. Without such PHIs, no use can be replaced:
++  // avoid walking a potentially very large use list just to reject it all.
++  if (!From->use_empty() && !From->hasOneUse() && Root.getEnd()->phis().empty() &&
++      !DT.dominates(Root, Root.getEnd()))
++    return 0;
+   auto DominatesAndShouldReplace = [&](const Use &U) {
+     return DT.dominates(Root, U) && ShouldReplace(U, To);
+   };

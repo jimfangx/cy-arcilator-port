@@ -1,0 +1,306 @@
+--- a/llvm/lib/CodeGen/LiveIntervals.cpp
++++ b/llvm/lib/CodeGen/LiveIntervals.cpp
+@@ -48,9 +48,16 @@
+ #include "llvm/Support/Compiler.h"
+ #include "llvm/Support/Debug.h"
+ #include "llvm/Support/MathExtras.h"
++#include "llvm/Support/JSON.h"
++#include "llvm/Support/FileSystem.h"
++#include "llvm/Support/ErrorHandling.h"
++#include "llvm/Support/Threading.h"
++#include "llvm/Support/thread.h"
+ #include "llvm/Support/raw_ostream.h"
+ #include <algorithm>
+ #include <cassert>
++#include <atomic>
++#include <chrono>
+ #include <cstdint>
+ #include <iterator>
+ #include <tuple>
+@@ -59,6 +66,80 @@
+ using namespace llvm;
+ 
+ #define DEBUG_TYPE "regalloc"
++
++namespace {
++cl::opt<unsigned> CoarseVirtRegJobs("parallel-virtreg-liveness-jobs", cl::Hidden,
++    cl::init(0), cl::desc("Coarse initial virtual liveness workers (0 stock, 1 serial refactor)"));
++cl::opt<unsigned> CoarseVirtRegMinimum("parallel-virtreg-liveness-min-registers", cl::Hidden,
++    cl::init(32768), cl::desc("Minimum virtual registers for coarse liveness analysis"));
++cl::opt<bool> CoarseVirtRegVerify("parallel-virtreg-liveness-verify", cl::Hidden,
++    cl::init(false), cl::desc("Recompute each parallel result at its original serial commit point"));
++cl::opt<bool> CoarseVirtRegReadOnlyVerify("parallel-virtreg-liveness-verify-readonly", cl::Hidden,
++    cl::init(false), cl::desc("Compare full MIR before and after worker phase (small fixtures)"));
++cl::opt<std::string> CoarseVirtRegReport("parallel-virtreg-liveness-report", cl::Hidden,
++    cl::init(""), cl::desc("Append per-function coarse liveness JSON diagnostics"));
++
++// The scalar path of LiveIntervalCalc::calculate, with no MachineOperand
++// mutation. All caches inherited from LiveRangeCalc and all output ranges are
++// worker-owned. The caller proves there are no subregister/bundle operands.
++class ReadOnlyScalarIntervalCalc : public LiveRangeCalc {
++public:
++  void calculate(LiveInterval &LI) {
++    const MachineRegisterInfo *MRI = getRegInfo();
++    SlotIndexes *Indexes = getIndexes();
++    VNInfo::Allocator *Alloc = getVNAlloc();
++    Register Reg = LI.reg();
++    for (const MachineOperand &MO : MRI->reg_nodbg_operands(Reg)) {
++      if (MO.isDef()) {
++        SlotIndex Def = Indexes->getInstructionIndex(*MO.getParent())
++                            .getRegSlot(MO.isEarlyClobber());
++        LI.createDeadDef(Def, *Alloc);
++      }
++    }
++    resetLiveOutMap();
++    for (const MachineOperand &MO : MRI->reg_nodbg_operands(Reg)) {
++      if (!MO.readsReg())
++        continue;
++      const MachineInstr *MI = MO.getParent();
++      unsigned OpNo = &MO - &MI->getOperand(0);
++      SlotIndex Use;
++      if (MI->isPHI()) {
++        Use = Indexes->getMBBEndIdx(MI->getOperand(OpNo + 1).getMBB());
++      } else {
++        bool Early = MO.isDef() && MO.isEarlyClobber();
++        unsigned DefIdx;
++        if (!MO.isDef() && MI->isRegTiedToDefOperand(OpNo, &DefIdx))
++          Early = MI->getOperand(DefIdx).isEarlyClobber();
++        Use = Indexes->getInstructionIndex(*MI).getRegSlot(Early);
++      }
++      extend(LI, Use, Reg, {});
++    }
++  }
++};
++
++bool equalScalarRanges(const LiveInterval &A, const LiveInterval &B) {
++  if (A.hasSubRanges() || B.hasSubRanges() || A.valnos.size() != B.valnos.size()
++      || A.segments.size() != B.segments.size())
++    return false;
++  for (size_t I = 0; I != A.valnos.size(); ++I)
++    if (A.valnos[I]->id != B.valnos[I]->id ||
++        A.valnos[I]->def != B.valnos[I]->def)
++      return false;
++  for (size_t I = 0; I != A.segments.size(); ++I) {
++    const auto &X = A.segments[I], &Y = B.segments[I];
++    if (X.start != Y.start || X.end != Y.end || X.valno->id != Y.valno->id)
++      return false;
++  }
++  return true;
++}
++
++std::string snapshotMIR(const MachineFunction &MF, const SlotIndexes *Indexes) {
++  std::string Text;
++  raw_string_ostream OS(Text);
++  MF.print(OS, Indexes);
++  return Text;
++}
++} // namespace
+ 
+ AnalysisKey LiveIntervalsAnalysis::Key;
+ 
+@@ -239,6 +320,205 @@
+ }
+ 
+ void LiveIntervals::computeVirtRegs() {
++  const unsigned OriginalRegisters = MRI->getNumVirtRegs();
++  if (CoarseVirtRegJobs && OriginalRegisters >= CoarseVirtRegMinimum) {
++    using Clock = std::chrono::steady_clock;
++    auto Seconds = [](Clock::time_point Begin) {
++      return std::chrono::duration<double>(Clock::now() - Begin).count();
++    };
++    auto BeginSelection = Clock::now();
++    SmallVector<unsigned, 0> Eligible;
++    SmallVector<uint64_t, 0> EligibleWork;
++    uint64_t MaximumRegisterWork = 0;
++    uint64_t OperandCount = 0;
++    unsigned Empty = 0, Complex = 0;
++    for (unsigned I = 0; I != OriginalRegisters; ++I) {
++      Register Reg = Register::index2VirtReg(I);
++      if (MRI->reg_nodbg_empty(Reg)) { ++Empty; continue; }
++      bool Safe = !MRI->shouldTrackSubRegLiveness(Reg);
++      uint64_t RegisterOperands = 0;
++      for (const MachineOperand &MO : MRI->reg_nodbg_operands(Reg)) {
++        ++OperandCount;
++        ++RegisterOperands;
++        Safe &= MO.getSubReg() == 0 && !MO.getParent()->isBundled();
++      }
++      if (Safe) {
++        Eligible.push_back(I);
++        // Resetting scalar range scratch and allocating/copying its result
++        // has fixed cost even for one-def/one-use registers. Operand visits
++        // estimate the additional work without rescanning MIR or CFG data.
++        uint64_t Work = 8 + RegisterOperands;
++        EligibleWork.push_back(Work);
++        MaximumRegisterWork = std::max(MaximumRegisterWork, Work);
++      }
++      else ++Complex;
++    }
++    // Avoid threading/scratch overhead for unprofitable MIR shapes. No model,
++    // function name, core configuration or program dispatch is involved.
++    if (Eligible.size() >= 2) {
++      struct Batch {
++        size_t Begin, End;
++        uint64_t EstimatedWork;
++        std::unique_ptr<VNInfo::Allocator> Arena;
++      };
++      constexpr size_t RegistersPerBatch = 8192;
++      constexpr uint64_t TargetBatchWork = 65536;
++      std::vector<Batch> Batches;
++      uint64_t BatchWork = 0, MaximumBatchWork = 0;
++      size_t Begin = 0;
++      for (size_t I = 0; I < Eligible.size(); ++I) {
++        BatchWork += EligibleWork[I];
++        if (BatchWork >= TargetBatchWork || I + 1 - Begin == RegistersPerBatch ||
++            I + 1 == Eligible.size()) {
++          Batches.push_back({Begin, I + 1, BatchWork,
++                             std::make_unique<VNInfo::Allocator>()});
++          MaximumBatchWork = std::max(MaximumBatchWork, BatchWork);
++          Begin = I + 1;
++          BatchWork = 0;
++        }
++      }
++      std::vector<std::unique_ptr<LiveInterval>> Results(OriginalRegisters);
++      // GenericDomTree::dominates lazily writes DFS numbers/SlowQueries. Make
++      // DFS numbers valid once, before workers, so its query path is read-only.
++      DomTree->updateDFSNumbers();
++      std::string Before;
++      if (CoarseVirtRegReadOnlyVerify) Before = snapshotMIR(*MF, Indexes);
++      double SelectionSeconds = Seconds(BeginSelection);
++      auto Strategy = llvm::hardware_concurrency(CoarseVirtRegJobs);
++      Strategy.Limit = true;
++      unsigned Workers = std::min<unsigned>(Batches.size(), Strategy.compute_thread_count());
++      Workers = std::max(1u, Workers);
++      std::atomic<size_t> Next{0};
++      std::vector<unsigned> BatchesPerWorker(Workers, 0);
++      std::vector<uint64_t> EstimatedWorkPerWorker(Workers, 0);
++      auto BeginAnalysis = Clock::now();
++      auto Work = [&](unsigned Worker) {
++        ReadOnlyScalarIntervalCalc Calc;
++        for (;;) {
++          size_t BatchNumber = Next.fetch_add(1, std::memory_order_relaxed);
++          if (BatchNumber >= Batches.size()) break;
++          ++BatchesPerWorker[Worker];
++          Batch &B = Batches[BatchNumber];
++          EstimatedWorkPerWorker[Worker] += B.EstimatedWork;
++          for (size_t J = B.Begin; J != B.End; ++J) {
++            unsigned I = Eligible[J];
++            Register Reg = Register::index2VirtReg(I);
++            auto LI = std::make_unique<LiveInterval>(Reg, 0.0F);
++            Calc.reset(MF, Indexes, DomTree, B.Arena.get());
++            Calc.calculate(*LI);
++            Results[I] = std::move(LI);
++          }
++        }
++      };
++      std::vector<llvm::thread> Threads;
++      for (unsigned I = 1; I != Workers; ++I) Threads.emplace_back(Work, I);
++      Work(0);
++      for (auto &Thread : Threads) Thread.join();
++      double AnalysisSeconds = Seconds(BeginAnalysis);
++      if (CoarseVirtRegReadOnlyVerify && Before != snapshotMIR(*MF, Indexes))
++        report_fatal_error("coarse liveness worker mutated input MIR");
++      auto BeginMerge = Clock::now();
++      unsigned Verified = 0, Splits = 0;
++      unsigned DiscardedAfterSplit = 0;
++      bool SnapshotInvalidated = false;
++      LiveIntervalCalc ReferenceCalc;
++      VNInfo::Allocator ReferenceArena;
++      double CopySeconds = 0;
++      size_t NextReleasedBatch = 0;
++      for (unsigned I = 0; I != OriginalRegisters; ++I) {
++        Register Reg = Register::index2VirtReg(I);
++        if (MRI->reg_nodbg_empty(Reg)) {
++          // A registered delegate may also have removed all operands of a
++          // later original register. Destroy its speculative object while
++          // its batch arena is still alive, even though no interval is needed.
++          if (Results[I]) {
++            Results[I].reset();
++            ++DiscardedAfterSplit;
++          }
++          continue;
++        }
++        LiveInterval &LI = createEmptyInterval(Reg);
++        bool NeedSplit;
++        if (Results[I] && !SnapshotInvalidated) {
++          if (CoarseVirtRegVerify) {
++            if (I % RegistersPerBatch == 0) ReferenceArena.Reset();
++            LiveInterval Reference(Reg, 0.0F);
++            ReferenceCalc.reset(MF, Indexes, DomTree, &ReferenceArena);
++            ReferenceCalc.calculate(Reference, false);
++            if (!equalScalarRanges(Reference, *Results[I]))
++              report_fatal_error("coarse liveness result differs at serial commit");
++            ++Verified;
++          }
++          if (!CoarseVirtRegReport.empty()) {
++            auto BeginCopy = Clock::now();
++            LI.assign(*Results[I], getVNInfoAllocator());
++            CopySeconds += Seconds(BeginCopy);
++          } else {
++            LI.assign(*Results[I], getVNInfoAllocator());
++          }
++          // This is the sole omitted calculation-side mutation. It is applied
++          // at the original register's serial commit point, before dead flags
++          // or component splitting, and after all workers have joined.
++          for (MachineOperand &MO : MRI->reg_nodbg_operands(Reg))
++            if (MO.isUse()) MO.setIsKill(false);
++          Results[I].reset();
++          NeedSplit = computeDeadValues(LI, nullptr);
++        } else {
++          if (Results[I]) {
++            // Cloning virtual registers notifies registered MRI delegates.
++            // Their effects are not assumed local to that register. Once any
++            // component split occurs, discard all later speculative results
++            // and follow the original serial computation from that point.
++            Results[I].reset();
++            ++DiscardedAfterSplit;
++          }
++          NeedSplit = computeVirtRegInterval(LI);
++        }
++        if (NeedSplit) {
++          SmallVector<LiveInterval *, 8> SplitLIs;
++          splitSeparateComponents(LI, SplitLIs);
++          Splits += SplitLIs.size();
++          SnapshotInvalidated |= !SplitLIs.empty();
++        }
++        // All source intervals in a contiguous register batch have now been
++        // merged; release its task-local value-number arena deterministically.
++        while (NextReleasedBatch < Batches.size() &&
++               I >= Eligible[Batches[NextReleasedBatch].End - 1])
++          Batches[NextReleasedBatch++].Arena.reset();
++      }
++      double MergeSeconds = Seconds(BeginMerge);
++      if (!CoarseVirtRegReport.empty()) {
++        json::Array WorkCounts;
++        json::Array WorkWeights;
++        for (unsigned N : BatchesPerWorker) WorkCounts.push_back(N);
++        for (uint64_t N : EstimatedWorkPerWorker) WorkWeights.push_back(int64_t(N));
++        json::Object Record{{"function", MF->getName()}, {"requested_jobs", int64_t(CoarseVirtRegJobs)},
++          {"workers", int64_t(Workers)}, {"original_registers", int64_t(OriginalRegisters)},
++          {"eligible_registers", int64_t(Eligible.size())}, {"fallback_complex_registers", int64_t(Complex)},
++          {"empty_registers", int64_t(Empty)}, {"operands_scanned", int64_t(OperandCount)},
++          {"batches", int64_t(Batches.size())}, {"batches_per_worker", std::move(WorkCounts)},
++          {"batch_strategy", "operand-weighted-coarse"},
++          {"estimated_work_per_worker", std::move(WorkWeights)},
++          {"target_batch_work", int64_t(TargetBatchWork)},
++          {"maximum_registers_per_batch", int64_t(RegistersPerBatch)},
++          {"maximum_register_estimated_work", int64_t(MaximumRegisterWork)},
++          {"maximum_batch_estimated_work", int64_t(MaximumBatchWork)},
++          {"worker_count_affinity_limited", true},
++          {"serial_results_verified", int64_t(Verified)}, {"serial_split_registers", int64_t(Splits)},
++          {"snapshot_invalidated_results", int64_t(DiscardedAfterSplit)},
++          {"snapshot_invalidated_after_split", SnapshotInvalidated},
++          {"readonly_MIR_verified", bool(CoarseVirtRegReadOnlyVerify)},
++          {"selection_seconds", SelectionSeconds}, {"analysis_seconds", AnalysisSeconds},
++          {"copy_seconds_within_merge", CopySeconds}, {"merge_seconds", MergeSeconds},
++          {"serial_verification_enabled", bool(CoarseVirtRegVerify)}};
++        std::error_code EC;
++        raw_fd_ostream OS(CoarseVirtRegReport, EC, sys::fs::OF_Append);
++        if (EC) report_fatal_error("cannot write coarse liveness report");
++        OS << json::Value(std::move(Record)) << '\n';
++      }
++      return;
++    }
++  }
+   for (unsigned i = 0, e = MRI->getNumVirtRegs(); i != e; ++i) {
+     Register Reg = Register::index2VirtReg(i);
+     if (MRI->reg_nodbg_empty(Reg))

@@ -1,0 +1,74 @@
+--- a/llvm/lib/CodeGen/ScheduleDAG.cpp
++++ b/llvm/lib/CodeGen/ScheduleDAG.cpp
+@@ -34,6 +34,61 @@
+ #include <vector>
+ 
+ using namespace llvm;
++
++// IsReachable only needs the Boolean result. No public API exposes its query
++// scratch, and every subsequent interpretation resets that scratch first.
++// Expand the smaller directed frontier within the valid topological interval.
++static bool bidirectionalSchedulingReachable(
++    const SUnit *Start, const SUnit *Target, ArrayRef<int> Rank,
++    BitVector &ForwardSeen, std::vector<const SUnit *> &ForwardQueue) {
++  const int Lower = Rank[Start->NodeNum], Upper = Rank[Target->NodeNum];
++  BitVector BackwardSeen(Rank.size());
++  SmallVector<const SUnit *, 64> BackwardQueue;
++  ForwardQueue.clear();
++  ForwardQueue.push_back(Start);
++  BackwardQueue.push_back(Target);
++  ForwardSeen.set(Start->NodeNum);
++  BackwardSeen.set(Target->NodeNum);
++  size_t ForwardBegin = 0, ForwardEnd = 1;
++  size_t BackwardBegin = 0, BackwardEnd = 1;
++  while (ForwardBegin != ForwardEnd && BackwardBegin != BackwardEnd) {
++    bool Forward = ForwardEnd - ForwardBegin <= BackwardEnd - BackwardBegin;
++    size_t Begin = Forward ? ForwardBegin : BackwardBegin;
++    size_t End = Forward ? ForwardEnd : BackwardEnd;
++    for (size_t I = Begin; I != End; ++I) {
++      const SUnit *Node = Forward ? ForwardQueue[I] : BackwardQueue[I];
++      const auto &Edges = Forward ? Node->Succs : Node->Preds;
++      for (const SDep &Edge : llvm::reverse(Edges)) {
++        const SUnit *Next = Edge.getSUnit();
++        unsigned N = Next->NodeNum;
++        if (N >= Rank.size() || Rank[N] < Lower || Rank[N] > Upper)
++          continue;
++        BitVector &Other = Forward ? BackwardSeen : ForwardSeen;
++        if (Other.test(N)) {
++          ForwardQueue.clear();
++          return true;
++        }
++        BitVector &Seen = Forward ? ForwardSeen : BackwardSeen;
++        if (!Seen.test(N)) {
++          Seen.set(N);
++          if (Forward)
++            ForwardQueue.push_back(Next);
++          else
++            BackwardQueue.push_back(Next);
++        }
++      }
++    }
++    if (Forward) {
++      ForwardBegin = ForwardEnd;
++      ForwardEnd = ForwardQueue.size();
++    } else {
++      BackwardBegin = BackwardEnd;
++      BackwardEnd = BackwardQueue.size();
++    }
++  }
++  ForwardQueue.clear();
++  return false;
++}
+ 
+ #define DEBUG_TYPE "pre-RA-sched"
+ 
+@@ -751,7 +806,8 @@
+     }
+     Visited.reset();
+     // There may be a path from TargetSU to SU. Check for it.
+-    DFS(TargetSU, UpperBound, HasLoop);
++    HasLoop = bidirectionalSchedulingReachable(
++        TargetSU, SU, Node2Index, Visited, WorkList);
+     // If there's no loop, cache the result. We only cache negative results,
+     // as positive results are not safe to cache; users call SU.removePred()
+     // without notifying us.

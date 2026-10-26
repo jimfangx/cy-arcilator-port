@@ -1,0 +1,63 @@
+--- a/llvm/lib/Transforms/Vectorize/SLPVectorizer.cpp
++++ b/llvm/lib/Transforms/Vectorize/SLPVectorizer.cpp
+@@ -3687,16 +3687,20 @@
+   };
+   using UserList = SmallVector<ExternalUser, 16>;
+ 
++  // Keep the common alias-limited scan in inline storage before growing.
++  using AliasCacheRow = SmallDenseMap<Instruction *, bool, 16>;
++
+   /// Checks if two instructions may access the same memory.
+   ///
+   /// \p Loc1 is the location of \p Inst1. It is passed explicitly because it
+   /// is invariant in the calling loop.
+   bool isAliased(const MemoryLocation &Loc1, Instruction *Inst1,
+-                 Instruction *Inst2) {
++                 Instruction *Inst2, AliasCacheRow *&SourceCache) {
+     assert(Loc1.Ptr && isSimple(Inst1) && "Expected simple first instruction.");
+     // First check if the result is already in the cache.
+-    AliasCacheKey Key = std::make_pair(Inst1, Inst2);
+-    auto Res = AliasCache.try_emplace(Key);
++    if (!SourceCache)
++      SourceCache = &AliasCache[Inst1];
++    auto Res = SourceCache->try_emplace(Inst2);
+     if (!Res.second)
+       return Res.first->second;
+     bool Aliased = isModOrRefSet(BatchAA->getModRefInfo(Inst2, Loc1));
+@@ -3789,11 +3793,14 @@
+   /// source order.
+   SmallVector<Instruction *> RTOrigBodyOrder;
+ 
+-  using AliasCacheKey = std::pair<Instruction *, Instruction *>;
+-
+-  /// Cache for alias results.
++  /// Cache for ordered alias queries, grouped by the invariant source.
++  /// The dependency scan queries many destinations for one source in a row.
++  /// Separate rows keep that working set local and avoid repeating the source
++  /// pointer in every pair key. Query direction, answers, and deleted-address
++  /// lifetime remain unchanged. The outer map is not mutated again while a
++  /// dependency scan reuses its source row.
+   /// TODO: consider moving this to the AliasAnalysis itself.
+-  SmallDenseMap<AliasCacheKey, bool> AliasCache;
++  SmallDenseMap<Instruction *, AliasCacheRow> AliasCache;
+ 
+   AAResults *AA;
+ 
+@@ -28007,6 +28014,7 @@
+     unsigned NumAliased = 0;
+     unsigned DistToSrc = 1;
+     bool IsNonSimpleSrc = !SrcLoc.Ptr || !isSimple(SrcInst);
++    AliasCacheRow *SourceAliasCache = nullptr;
+ 
+     for (ScheduleData *DepDest = NextLoadStore; DepDest;
+          DepDest = DepDest->getNextLoadStore()) {
+@@ -28023,7 +28031,8 @@
+       bool MayConflict = SrcMayWrite || DepInst->mayWriteToMemory();
+       if (DistToSrc >= MaxMemDepDistance ||
+           (MayConflict && (IsNonSimpleSrc || NumAliased >= AliasedCheckLimit ||
+-                           SLP->isAliased(SrcLoc, SrcInst, DepInst)))) {
++                           SLP->isAliased(SrcLoc, SrcInst, DepInst,
++                                          SourceAliasCache)))) {
+         // Try to turn a may-alias dependency between distinct, range-checkable
+         // base objects into a runtime alias check. This covers both concrete
+         // aliases and the conservative dependencies added once the

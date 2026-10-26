@@ -1,0 +1,82 @@
+--- a/llvm/lib/Analysis/MemorySSA.cpp
++++ b/llvm/lib/Analysis/MemorySSA.cpp
+@@ -969,16 +969,13 @@
+ };
+ 
+ struct RenamePassData {
+-  DomTreeNode *DTN;
+   DomTreeNode::const_iterator ChildIt;
+   MemoryAccess *IncomingVal;
+ 
+-  RenamePassData(DomTreeNode *D, DomTreeNode::const_iterator It,
+-                 MemoryAccess *M)
+-      : DTN(D), ChildIt(It), IncomingVal(M) {}
++  RenamePassData(DomTreeNode::const_iterator It, MemoryAccess *M)
++      : ChildIt(It), IncomingVal(M) {}
+ 
+   void swap(RenamePassData &RHS) {
+-    std::swap(DTN, RHS.DTN);
+     std::swap(ChildIt, RHS.ChildIt);
+     std::swap(IncomingVal, RHS.IncomingVal);
+   }
+@@ -1161,35 +1158,35 @@
+ 
+   IncomingVal = renameBlock(Root->getBlock(), IncomingVal, RenameAllUses);
+   renameSuccessorPhis(Root->getBlock(), IncomingVal, RenameAllUses);
+-  WorkStack.push_back({Root, Root->begin(), IncomingVal});
++  if (!Root->isLeaf())
++    WorkStack.push_back({Root->begin(), IncomingVal});
+ 
+   while (!WorkStack.empty()) {
+-    DomTreeNode *Node = WorkStack.back().DTN;
+-    DomTreeNode::const_iterator ChildIt = WorkStack.back().ChildIt;
++    // Frames contain only pending siblings. Copy the parent's incoming value
++    // before retiring its last-child frame; a leaf needs no frame at all.
++    // The pinned dominator child iterator uses a shared null end sentinel.
++    DomTreeNode *Child = *WorkStack.back().ChildIt++;
+     IncomingVal = WorkStack.back().IncomingVal;
+-
+-    if (ChildIt == Node->end()) {
++    if (WorkStack.back().ChildIt == DomTreeNode::const_iterator())
+       WorkStack.pop_back();
+-    } else {
+-      DomTreeNode *Child = *ChildIt;
+-      ++WorkStack.back().ChildIt;
+-      BasicBlock *BB = Child->getBlock();
+-      // Note: You can't sink this into the if, because we need it to occur
+-      // regardless of whether we skip blocks or not.
+-      AlreadyVisited = !Visited.insert(BB).second;
+-      if (SkipVisited && AlreadyVisited) {
+-        // We already visited this during our renaming, which can happen when
+-        // being asked to rename multiple blocks. Figure out the incoming val,
+-        // which is the last def.
+-        // Incoming value can only change if there is a block def, and in that
+-        // case, it's the last block def in the list.
+-        if (auto *BlockDefs = getBlockDefs(BB))
+-          IncomingVal = &*BlockDefs->rbegin();
+-      } else
+-        IncomingVal = renameBlock(BB, IncomingVal, RenameAllUses);
+-      renameSuccessorPhis(BB, IncomingVal, RenameAllUses);
+-      WorkStack.push_back({Child, Child->begin(), IncomingVal});
+-    }
++
++    BasicBlock *BB = Child->getBlock();
++    // Note: You can't sink this into the if, because we need it to occur
++    // regardless of whether we skip blocks or not.
++    AlreadyVisited = !Visited.insert(BB).second;
++    if (SkipVisited && AlreadyVisited) {
++      // We already visited this during our renaming, which can happen when
++      // being asked to rename multiple blocks. Figure out the incoming val,
++      // which is the last def.
++      // Incoming value can only change if there is a block def, and in that
++      // case, it's the last block def in the list.
++      if (auto *BlockDefs = getBlockDefs(BB))
++        IncomingVal = &*BlockDefs->rbegin();
++    } else
++      IncomingVal = renameBlock(BB, IncomingVal, RenameAllUses);
++    renameSuccessorPhis(BB, IncomingVal, RenameAllUses);
++    if (!Child->isLeaf())
++      WorkStack.push_back({Child->begin(), IncomingVal});
+   }
+ }
+ 

@@ -1,0 +1,1059 @@
+{
+  "schema": 2,
+  "project": "llvm/llvm-project",
+  "revision": "a17069fea5b271c6824ea773874b007116de9644",
+  "circt_revision": "fa4f662cbe710906347fac795c581a06c6b99757",
+  "circt_release": "firtool-1.162.0",
+  "patches": [
+    {
+      "file": "0001-codegen-skip-repeated-schedule-dag-visits.patch",
+      "sha256": "8a8e85b98fdbd439acd9eb24ea8058dbc1945674f885f771edb81f73ef1bdc50"
+    },
+    {
+      "file": "0002-codegen-skip-use-scan-without-subregister-tracking.patch",
+      "sha256": "26988fada4cb02c0904d24d00df5fa7009cfb426bd031acacc303cfe579e9e4a"
+    },
+    {
+      "file": "0003-codegen-skip-slot-prefix-before-live-range.patch",
+      "sha256": "d7932c74c6082bafbad7f3ec150cd50b73374e7a315deca062e9ad30bf2f83a6"
+    },
+    {
+      "file": "0004-analysis-index-lvi-value-block-membership.patch",
+      "sha256": "77be001bf8c57b1412a98a33b5e4efef956e70fa884db3d2b86fca0efc025ed3"
+    },
+    {
+      "file": "0005-vectorize-group-alias-cache-by-source.patch",
+      "sha256": "1b49294161e62cda3dab8a137ca98c9e72f064c18dbdabd1b3304a2fd5ac869d"
+    },
+    {
+      "file": "0006-codegen-collect-physical-register-use-suffix.patch",
+      "sha256": "77c9094431d7c52d609805c8676743822b12f53e58cd56fc58e36f173c84e2ff"
+    },
+    {
+      "file": "0007-codegen-search-scheduling-reachability-bidirectionally.patch",
+      "sha256": "d7b5a416b388b9656a6c16ef25f7da6363217a44f0696c95875c28c603b3039f"
+    },
+    {
+      "file": "0008-analysis-short-circuit-edge-dominance.patch",
+      "sha256": "381ddf617a2da232d045422ccb03706a4759a33550edf58b30f07d1b41405ca9",
+      "status": "source_and_output_qualified_separate_delivery_acceptance_required",
+      "origin": "/tmp/arcilator-llvm-scale2/full-toolchain/additional-patches/dom-edge.patch"
+    },
+    {
+      "file": "0009-codegen-parallelize-initial-scalar-live-ranges.patch",
+      "sha256": "07f80afc9406e6c0dbaf95a9b88dfa4e671a88a44b8064ea6b0ab671ea01a008",
+      "status": "source_and_output_qualified_separate_delivery_acceptance_required",
+      "origin": "/tmp/arcilator-llvm-scale2/parallel-analysis/package-v3-final/coarse-virtual-liveness.patch"
+    },
+    {
+      "file": "0010-build-skip-hidden-IR-profile-alias-exports.patch",
+      "sha256": "727a219503d29f4a3110452cb3359a191bd754f36f3e184c22e91d0cecdf2b2c",
+      "status": "source_and_output_qualified_separate_delivery_acceptance_required",
+      "origin": "/tmp/arcilator-llvm-scale2/full-toolchain/additional-patches/elf-profile-alias-exports.patch"
+    },
+    {
+      "file": "0011-analysis-prune-memoryssa-traversal-frames.patch",
+      "sha256": "b032da468109be96c687ff7d68f120c9ec77c6fb081c5903d343f8d2e1f1e3a3",
+      "paths": [
+        "llvm/lib/Analysis/MemorySSA.cpp"
+      ],
+      "status": "source_and_output_qualified_separate_delivery_acceptance_required"
+    },
+    {
+      "file": "0012-transforms-skip-impossible-dominated-use-walks.patch",
+      "sha256": "dca07812a51c74cb8e003fdeadf340d3829c2382aa870f69f71b56b627710af8",
+      "paths": [
+        "llvm/lib/Transforms/Utils/Local.cpp"
+      ],
+      "status": "source_and_output_qualified_separate_delivery_acceptance_required"
+    },
+    {
+      "file": "0013-codegen-index-source-order-ready-prefix.patch",
+      "sha256": "ebd747585adf3469595095cac9693b7736d085f105c3c354eba8631e30030783",
+      "paths": [
+        "llvm/lib/CodeGen/SelectionDAG/ScheduleDAGRRList.cpp",
+        "llvm/lib/CodeGen/SelectionDAG/SourceOrderPrefix.h"
+      ],
+      "status": "source_and_output_qualified_separate_delivery_acceptance_required"
+    }
+  ],
+  "original_sources": {
+    "llvm/lib/CodeGen/ScheduleDAG.cpp": "9bc7bda2020e39bcecc3117095221610439b2eb47a8d58cd1163ed896a257280",
+    "llvm/lib/CodeGen/LiveIntervalCalc.cpp": "0b1dc70db164e4f29e17d4591109aaf28af9c1659e66fa63d7d0245741fca3fd",
+    "llvm/lib/CodeGen/LiveInterval.cpp": "a9080a1cce208a9f6bb7e05446cbb9cf8f8d0f42ee73940ce35cd79e98ae8126",
+    "llvm/include/llvm/CodeGen/LiveInterval.h": "1993eb4f65f7d6ab4cc4fef8816d72a0b5a483d6baabdd5194a17fd4f1939501",
+    "llvm/lib/Transforms/Vectorize/SLPVectorizer.cpp": "124d88be63a6d9aa8bb2301d44847495e7a4f38bc6fd8e59132b8162cc4f12cd",
+    "llvm/lib/Analysis/LazyValueInfo.cpp": "8298e03f566b88b2d93e0d32f09037e879d5be13dd704adadcef27f0a960faad",
+    "llvm/lib/CodeGen/MachineRegisterInfo.cpp": "4abcc13a4ad4d2ad57792f3e0f9109be1ddddfe2abe7f368b9cc2870147b102c",
+    "llvm/include/llvm/CodeGen/MachineRegisterInfo.h": "e7474a2f20427e557ef45d38daf42886bec93f2aeb4b88c9cfcac7a0ebde7d8c",
+    "llvm/lib/IR/Dominators.cpp": "10c2c04dd954ae87a179d43ab1b1c135164549fede3eebc010480487538b5f16",
+    "llvm/lib/CodeGen/LiveIntervals.cpp": "b7f30d07d426ba6761f9a4190194906e0a6aebb473606ef182e0ecb2064e9878",
+    "llvm/utils/extract_symbols.py": "33dc97d0330fe6389808bda31c20d756288a9c31d9d22822a80144fab91815a4",
+    "llvm/lib/Analysis/MemorySSA.cpp": "351044e26d9d0dfb7a1cc2c9abf3a325734357d85bb2d7dc4e4103c7529beced",
+    "llvm/lib/Transforms/Utils/Local.cpp": "43acf8e74340207adfcb1dc45791f4ab0360d5a1882bef011a083277fda3e904",
+    "llvm/lib/CodeGen/SelectionDAG/ScheduleDAGRRList.cpp": "e538031aa3d7752db793ddf775710540f5632b2e637a017271ece3483f019180"
+  },
+  "patched_cpp_sources": {
+    "llvm/lib/CodeGen/ScheduleDAG.cpp": "045c38dfad360037f7bea8345eada27ae5ab18ad10e9b50a2b1aadd90347b017",
+    "llvm/lib/CodeGen/LiveIntervalCalc.cpp": "dd2316fdec0c2c180de558fe6927949de8672145cbe54cecbecb78d56c2509d9",
+    "llvm/lib/CodeGen/LiveInterval.cpp": "27f26e1aec5eb5b976860b48f0bacc64b5d58e412e38a4a3efbf0379524fd6fe",
+    "llvm/lib/Transforms/Vectorize/SLPVectorizer.cpp": "b60b8889b4997426a5a605f898a1d6232fc2a7782d639b450ae114bfa10160c5",
+    "llvm/lib/Analysis/LazyValueInfo.cpp": "9b333873a0083fe457282ba78f60a0e8cbdcffdac05a31a6ad1759e0d7f4cdcd",
+    "llvm/lib/CodeGen/MachineRegisterInfo.cpp": "eb3764a53662482d575f123704e4767575ba2accc01f7a48a9ca56c81fcb6fd4",
+    "llvm/lib/IR/Dominators.cpp": "4608f0f57402e35ea039f38807772024899f4a3315586503ee2c8624a3400c37",
+    "llvm/lib/CodeGen/LiveIntervals.cpp": "6ef5ffe8358a745110be633360c52b6cbfcbb0d70df75f1b3b8277979fa39748",
+    "llvm/lib/Analysis/MemorySSA.cpp": "0bdcf661603c0fa1634973d6cea41ff88306f21138580cacb786cd04ee4f0a65",
+    "llvm/lib/Transforms/Utils/Local.cpp": "01f3f4b5e6b5219b907b5d5a1b483d99e24de8ef1dc07ce117dbf4c02afc51d1",
+    "llvm/lib/CodeGen/SelectionDAG/ScheduleDAGRRList.cpp": "1d1a2d5a267cb0d556256d9112035a4f86f4abbb10000a05d06ff16df59b7b48"
+  },
+  "license": {
+    "file": "LICENSE.txt",
+    "sha256": "8d85c1057d742e597985c7d4e6320b015a9139385cff4cbae06ffc0ebe89afee",
+    "source": "https://github.com/llvm/llvm-project/blob/a17069fea5b271c6824ea773874b007116de9644/llvm/LICENSE.TXT",
+    "spdx": "Apache-2.0 WITH LLVM-exception"
+  },
+  "validation": {
+    "whole_model_object_byte_identity": [
+      "RocketConfig",
+      "MegaBoomV3Config",
+      "REFV256D128RocketConfig",
+      "ShuttleConfig"
+    ],
+    "scope": "Matched LLVM backend compilation of existing complete model bitcode; no end-to-end build-time improvement claimed. No runtime code changes in these comparisons.",
+    "tests_included": false,
+    "applies_to_patches": [
+      "0001-codegen-skip-repeated-schedule-dag-visits.patch",
+      "0002-codegen-skip-use-scan-without-subregister-tracking.patch",
+      "0003-codegen-skip-slot-prefix-before-live-range.patch"
+    ]
+  },
+  "sorted_slot_contract": "LiveRange::isLiveAtIndexes requires non-decreasing slot indexes; duplicate indexes remain supported.",
+  "optimizer_overlay": {
+    "implementation_source_count": 30,
+    "implementation_sources": [
+      {
+        "path": "llvm/lib/Transforms/InstCombine/InstructionCombining.cpp",
+        "original_sha256": "75bd14b8485b2a49d31d90f1e4bab3de1d8066546ec53eda9d28769dbc1be3c8",
+        "patched_sha256": "75bd14b8485b2a49d31d90f1e4bab3de1d8066546ec53eda9d28769dbc1be3c8"
+      },
+      {
+        "path": "llvm/lib/Transforms/InstCombine/InstCombineAddSub.cpp",
+        "original_sha256": "5282217daec862e3a44b4d2d45fc2e1cf92f414579ea47603ce3e1496ebce5c1",
+        "patched_sha256": "5282217daec862e3a44b4d2d45fc2e1cf92f414579ea47603ce3e1496ebce5c1"
+      },
+      {
+        "path": "llvm/lib/Transforms/InstCombine/InstCombineAtomicRMW.cpp",
+        "original_sha256": "172dec8929cdbd6929c820a1528dc7a167705d2dcad25e60a4209734f7864b33",
+        "patched_sha256": "172dec8929cdbd6929c820a1528dc7a167705d2dcad25e60a4209734f7864b33"
+      },
+      {
+        "path": "llvm/lib/Transforms/InstCombine/InstCombineAndOrXor.cpp",
+        "original_sha256": "38896133cbe2da91de1788752b83b72b2a3685f36cc467bdb6110318175a97ef",
+        "patched_sha256": "38896133cbe2da91de1788752b83b72b2a3685f36cc467bdb6110318175a97ef"
+      },
+      {
+        "path": "llvm/lib/Transforms/InstCombine/InstCombineCalls.cpp",
+        "original_sha256": "8e20485f911c2c2fbef2763babda6e7728d632edf7d63b72a646879caa3776b9",
+        "patched_sha256": "8e20485f911c2c2fbef2763babda6e7728d632edf7d63b72a646879caa3776b9"
+      },
+      {
+        "path": "llvm/lib/Transforms/InstCombine/InstCombineCasts.cpp",
+        "original_sha256": "0f015e37b85c4641863e1d13c20be8bf90daaa2f5d1f027909e4ebf7bf3e7c93",
+        "patched_sha256": "0f015e37b85c4641863e1d13c20be8bf90daaa2f5d1f027909e4ebf7bf3e7c93"
+      },
+      {
+        "path": "llvm/lib/Transforms/InstCombine/InstCombineCLOptions.cpp",
+        "original_sha256": "2c29b048f95760ba7a003184fb9324a5e427a8a8b952ce26059328a677e0d59c",
+        "patched_sha256": "2c29b048f95760ba7a003184fb9324a5e427a8a8b952ce26059328a677e0d59c"
+      },
+      {
+        "path": "llvm/lib/Transforms/InstCombine/InstCombineCompares.cpp",
+        "original_sha256": "11c6b1d119826c2515b85de24659fec237ca786777f66f6af62b1411c68927e2",
+        "patched_sha256": "11c6b1d119826c2515b85de24659fec237ca786777f66f6af62b1411c68927e2"
+      },
+      {
+        "path": "llvm/lib/Transforms/InstCombine/InstCombineLoadStoreAlloca.cpp",
+        "original_sha256": "f2c93246a81e0c44982c0cb5add21a5aea3e2fff16a07aebd7b4b1c6f18a0b87",
+        "patched_sha256": "f2c93246a81e0c44982c0cb5add21a5aea3e2fff16a07aebd7b4b1c6f18a0b87"
+      },
+      {
+        "path": "llvm/lib/Transforms/InstCombine/InstCombineMulDivRem.cpp",
+        "original_sha256": "f5f20e245abc14947dcec87bd426aeb39002aad9a670b9b2b8518458be422cc9",
+        "patched_sha256": "f5f20e245abc14947dcec87bd426aeb39002aad9a670b9b2b8518458be422cc9"
+      },
+      {
+        "path": "llvm/lib/Transforms/InstCombine/InstCombineNegator.cpp",
+        "original_sha256": "379ec4a911d3bbd0230e6181809a29ba6da2c01c72e47ace28a93f3c8a231f9a",
+        "patched_sha256": "379ec4a911d3bbd0230e6181809a29ba6da2c01c72e47ace28a93f3c8a231f9a"
+      },
+      {
+        "path": "llvm/lib/Transforms/InstCombine/InstCombinePHI.cpp",
+        "original_sha256": "498c473a2685faf2bac8f018745ad6e7055426dc573a7bcaf099160bb49daa25",
+        "patched_sha256": "498c473a2685faf2bac8f018745ad6e7055426dc573a7bcaf099160bb49daa25"
+      },
+      {
+        "path": "llvm/lib/Transforms/InstCombine/InstCombineSelect.cpp",
+        "original_sha256": "bc64d5263230359f2387b63c04f207c04b8ce0ba962414e1c041e5d14123d442",
+        "patched_sha256": "bc64d5263230359f2387b63c04f207c04b8ce0ba962414e1c041e5d14123d442"
+      },
+      {
+        "path": "llvm/lib/Transforms/InstCombine/InstCombineShifts.cpp",
+        "original_sha256": "edff18510366a8c3c96ce89cd4045d15171e22271992322c6cc8b8ade9702942",
+        "patched_sha256": "edff18510366a8c3c96ce89cd4045d15171e22271992322c6cc8b8ade9702942"
+      },
+      {
+        "path": "llvm/lib/Transforms/InstCombine/InstCombineSimplifyDemanded.cpp",
+        "original_sha256": "8bd6e9e42f34d64f67f40fcfd23d53f630d0bae6358c3b32c86bd56e30bac122",
+        "patched_sha256": "8bd6e9e42f34d64f67f40fcfd23d53f630d0bae6358c3b32c86bd56e30bac122"
+      },
+      {
+        "path": "llvm/lib/Transforms/InstCombine/InstCombineVectorOps.cpp",
+        "original_sha256": "4721f5c375496eca208af1dc5c926254e7a09191d4e2bc540d993ba670c4bb25",
+        "patched_sha256": "4721f5c375496eca208af1dc5c926254e7a09191d4e2bc540d993ba670c4bb25"
+      },
+      {
+        "path": "llvm/lib/Transforms/Vectorize/SLPVectorizer/SLPCompatibilityAnalysis.cpp",
+        "original_sha256": "14a9389d2768e24ccf81cb7028943c74ef862ef44072ae1e72692068bbcbc740",
+        "patched_sha256": "14a9389d2768e24ccf81cb7028943c74ef862ef44072ae1e72692068bbcbc740"
+      },
+      {
+        "path": "llvm/lib/Transforms/Vectorize/SLPVectorizer/SLPCostAnalysis.cpp",
+        "original_sha256": "2e864b6c7007f5598ae54c95a7ef4cc76f605294f418192577ed0c5ef444b920",
+        "patched_sha256": "2e864b6c7007f5598ae54c95a7ef4cc76f605294f418192577ed0c5ef444b920"
+      },
+      {
+        "path": "llvm/lib/Transforms/Vectorize/SLPVectorizer/SLPMemoryUtils.cpp",
+        "original_sha256": "4a67a48ec81efa60cacd04d224607b36eecbc2cf114d419cf512d9c64d58a3f1",
+        "patched_sha256": "4a67a48ec81efa60cacd04d224607b36eecbc2cf114d419cf512d9c64d58a3f1"
+      },
+      {
+        "path": "llvm/lib/Transforms/Vectorize/SLPVectorizer/SLPReductionUtils.cpp",
+        "original_sha256": "47ebefa431bf767fc6f76ebde4149703d0f1d4a8ea13aa351b209cfdf0e9c8eb",
+        "patched_sha256": "47ebefa431bf767fc6f76ebde4149703d0f1d4a8ea13aa351b209cfdf0e9c8eb"
+      },
+      {
+        "path": "llvm/lib/Transforms/Vectorize/SLPVectorizer/SLPTypeUtils.cpp",
+        "original_sha256": "2116fced6d1b8a28b97f5140846b16d6225a1fc57d94baf10cd1735bddb08bad",
+        "patched_sha256": "2116fced6d1b8a28b97f5140846b16d6225a1fc57d94baf10cd1735bddb08bad"
+      },
+      {
+        "path": "llvm/lib/Transforms/Vectorize/SLPVectorizer/SLPUtils.cpp",
+        "original_sha256": "c83a0d4c9c548ff168327d6632d1f386a9059e71c32a931d84cebf2aaa64bc68",
+        "patched_sha256": "c83a0d4c9c548ff168327d6632d1f386a9059e71c32a931d84cebf2aaa64bc68"
+      },
+      {
+        "path": "llvm/lib/Transforms/Vectorize/SLPVectorizer.cpp",
+        "original_sha256": "124d88be63a6d9aa8bb2301d44847495e7a4f38bc6fd8e59132b8162cc4f12cd",
+        "patched_sha256": "b60b8889b4997426a5a605f898a1d6232fc2a7782d639b450ae114bfa10160c5"
+      },
+      {
+        "path": "llvm/lib/Transforms/Scalar/MemCpyOptimizer.cpp",
+        "original_sha256": "71ee23a3d580fd4eb55315284b649199aaeba1d93773e58e8d053846f62cd6ad",
+        "patched_sha256": "71ee23a3d580fd4eb55315284b649199aaeba1d93773e58e8d053846f62cd6ad"
+      },
+      {
+        "path": "llvm/lib/Transforms/Scalar/CorrelatedValuePropagation.cpp",
+        "original_sha256": "874dd6cb2cff6e173fc55e34c476722381205844e99953b573022b23541bc2b9",
+        "patched_sha256": "874dd6cb2cff6e173fc55e34c476722381205844e99953b573022b23541bc2b9"
+      },
+      {
+        "path": "llvm/lib/Analysis/LazyValueInfo.cpp",
+        "original_sha256": "8298e03f566b88b2d93e0d32f09037e879d5be13dd704adadcef27f0a960faad",
+        "patched_sha256": "9b333873a0083fe457282ba78f60a0e8cbdcffdac05a31a6ad1759e0d7f4cdcd"
+      },
+      {
+        "path": "llvm/lib/IR/Dominators.cpp",
+        "original_sha256": "10c2c04dd954ae87a179d43ab1b1c135164549fede3eebc010480487538b5f16",
+        "patched_sha256": "10c2c04dd954ae87a179d43ab1b1c135164549fede3eebc010480487538b5f16"
+      },
+      {
+        "path": "llvm/lib/Analysis/MemorySSA.cpp",
+        "original_sha256": "351044e26d9d0dfb7a1cc2c9abf3a325734357d85bb2d7dc4e4103c7529beced",
+        "patched_sha256": "351044e26d9d0dfb7a1cc2c9abf3a325734357d85bb2d7dc4e4103c7529beced"
+      },
+      {
+        "path": "llvm/lib/Analysis/MemorySSAUpdater.cpp",
+        "original_sha256": "244fbf7dc3a434cdd87f4b07fcbebbdc80f944d40ae05e6f425787bc89d8160a",
+        "patched_sha256": "244fbf7dc3a434cdd87f4b07fcbebbdc80f944d40ae05e6f425787bc89d8160a"
+      },
+      {
+        "path": "llvm/lib/Analysis/ValueTracking.cpp",
+        "original_sha256": "1b070a2fb535da86dd737cab5f2af701bff89946b9703ab243a8505e2d901fb3",
+        "patched_sha256": "1b070a2fb535da86dd737cab5f2af701bff89946b9703ab243a8505e2d901fb3"
+      }
+    ],
+    "generated_private_header": {
+      "path": "llvm/lib/Transforms/InstCombine/InstCombineCLOptions.inc",
+      "sha256": "45de4a72b5df2856952764930ba8158474e2abe6f833fba43643f86459a8b805",
+      "generator": "matching SDK llvm-tblgen -gen-opt-parser-defs"
+    },
+    "private_include_directories": [
+      "llvm/lib/Transforms/Vectorize"
+    ],
+    "profile_kind": "ir",
+    "fresh_profile_required_after_source_or_build_setting_change": true,
+    "additional_unmodified_profiled_sources": [
+      "llvm/lib/IR/Dominators.cpp",
+      "llvm/lib/Analysis/MemorySSA.cpp",
+      "llvm/lib/Analysis/MemorySSAUpdater.cpp",
+      "llvm/lib/Analysis/ValueTracking.cpp"
+    ],
+    "applies_to_patches": [
+      "0001-codegen-skip-repeated-schedule-dag-visits.patch",
+      "0002-codegen-skip-use-scan-without-subregister-tracking.patch",
+      "0003-codegen-skip-slot-prefix-before-live-range.patch",
+      "0004-analysis-index-lvi-value-block-membership.patch",
+      "0005-vectorize-group-alias-cache-by-source.patch",
+      "0006-codegen-collect-physical-register-use-suffix.patch",
+      "0007-codegen-search-scheduling-reachability-bidirectionally.patch"
+    ],
+    "recipe_scope": "Legacy0001--0007 SDK overlay only; use a separate pinned source root with exactly this patch subset.",
+    "expected_source_hash_policy": "Retain every original implementation_sources original/patched hash below. Global full-series patched source hashes do not override this legacy recipe.",
+    "supports_0008_to_0010": false
+  },
+  "optimizer_validation": {
+    "applies_to_patches": [
+      "0004-analysis-index-lvi-value-block-membership.patch",
+      "0005-vectorize-group-alias-cache-by-source.patch"
+    ],
+    "status": "accepted_in_prior_code_preserving_four_target_delivery",
+    "training_optimized_bitcode_exact": [
+      "RocketConfig",
+      "MegaBoomV3Config",
+      "REFV256D128RocketConfig",
+      "ShuttleConfig"
+    ],
+    "isolated_boom_optimizer": {
+      "runs_per_candidate": 2,
+      "total_runs": 8,
+      "all_optimized_bitcode_byte_exact": true,
+      "prior_selected_opt_median_seconds": 71.6076,
+      "lvi26_median_seconds": 64.1399,
+      "combined30_median_seconds": 56.1024,
+      "combined30_change_percent": -21.65,
+      "scope": "BOOM optimizer stage only; combined algorithm changes and broader compiler IR-PGO coverage. Not a full simulator-build or all-configuration speed claim."
+    },
+    "lvi_oracle": {
+      "events": 3600,
+      "answer_queries": 242680,
+      "actual_cache_and_callback_bodies": true,
+      "nonnull_membership_mutant_detected": true,
+      "inline_handle_bytes_before": 40,
+      "inline_handle_bytes_after": 72
+    },
+    "slp_oracle": {
+      "queries": 430511,
+      "ordered_backend_trace_entries": 361093,
+      "direction_mutant_detected": true,
+      "backend": "mock AA; actual cache lookup bodies and SDK containers",
+      "pair_bucket_bytes_before": 24,
+      "destination_bucket_bytes_after": 16,
+      "row_object_bytes": 272
+    },
+    "fresh_all_four_full_build_runtime_qualification_pending": false,
+    "tests_included": false,
+    "accepted_delivery": {
+      "delivery": "native-compiler-only-20261026T010301Z",
+      "report": "/home/ubuntu/chipyard/sims/arcilator/output/development/native-compiler-only-20261026T010301Z/build-preservation-report.md",
+      "report_sha256": "d11ee048fb84003a73520fb8ef3ec5a488f150f09ee32b241e96f1f9efbce369",
+      "independent_review": "/home/ubuntu/chipyard/sims/arcilator/output/development/native-compiler-only-20261026T010301Z/root-final-review.json",
+      "independent_review_sha256": "5bc0e91fb317a0ef04063343836f56cfae95ce69444936ce8f62edf1bd12c58f",
+      "scope": "Legacy1\u20137 bundle accepted with exact four model objects/matched load images and tested scalar semantics; historical microbenchmarks remain separately scoped."
+    }
+  },
+  "source_urls": {
+    "llvm/lib/CodeGen/MachineRegisterInfo.cpp": "https://raw.githubusercontent.com/llvm/llvm-project/a17069fea5b271c6824ea773874b007116de9644/llvm/lib/CodeGen/MachineRegisterInfo.cpp",
+    "llvm/include/llvm/CodeGen/MachineRegisterInfo.h": "https://raw.githubusercontent.com/llvm/llvm-project/a17069fea5b271c6824ea773874b007116de9644/llvm/include/llvm/CodeGen/MachineRegisterInfo.h",
+    "llvm/lib/CodeGen/ScheduleDAG.cpp": "https://raw.githubusercontent.com/llvm/llvm-project/a17069fea5b271c6824ea773874b007116de9644/llvm/lib/CodeGen/ScheduleDAG.cpp",
+    "llvm/lib/IR/Dominators.cpp": "https://raw.githubusercontent.com/llvm/llvm-project/a17069fea5b271c6824ea773874b007116de9644/llvm/lib/IR/Dominators.cpp",
+    "llvm/lib/CodeGen/LiveIntervals.cpp": "https://raw.githubusercontent.com/llvm/llvm-project/a17069fea5b271c6824ea773874b007116de9644/llvm/lib/CodeGen/LiveIntervals.cpp",
+    "llvm/utils/extract_symbols.py": "https://raw.githubusercontent.com/llvm/llvm-project/a17069fea5b271c6824ea773874b007116de9644/llvm/utils/extract_symbols.py",
+    "llvm/include/llvm/CodeGen/LiveInterval.h": "https://raw.githubusercontent.com/llvm/llvm-project/a17069fea5b271c6824ea773874b007116de9644/llvm/include/llvm/CodeGen/LiveInterval.h",
+    "llvm/lib/Analysis/MemorySSA.cpp": "https://raw.githubusercontent.com/llvm/llvm-project/a17069fea5b271c6824ea773874b007116de9644/llvm/lib/Analysis/MemorySSA.cpp",
+    "llvm/lib/Transforms/Utils/Local.cpp": "https://raw.githubusercontent.com/llvm/llvm-project/a17069fea5b271c6824ea773874b007116de9644/llvm/lib/Transforms/Utils/Local.cpp",
+    "llvm/lib/CodeGen/SelectionDAG/ScheduleDAGRRList.cpp": "https://raw.githubusercontent.com/llvm/llvm-project/a17069fea5b271c6824ea773874b007116de9644/llvm/lib/CodeGen/SelectionDAG/ScheduleDAGRRList.cpp"
+  },
+  "patched_header_sources": {
+    "llvm/include/llvm/CodeGen/MachineRegisterInfo.h": "8b57714889c47609546bc9c8714be3f428f4599dfb7a48f095c4ba318f4b9d1f",
+    "llvm/include/llvm/CodeGen/LiveInterval.h": "ba6b3ba6cf38f3cbded35284fb6d22cdfc7d1ef7238ec812e6b103ec4be95d89"
+  },
+  "backend_overlay": {
+    "implementation_source_count": 8,
+    "implementation_sources": [
+      {
+        "path": "llvm/lib/CodeGen/SlotIndexes.cpp",
+        "original_sha256": "86348b50e9360990ad8eb0010f864a084ff82efe261cbad2f4c84997555d8c15",
+        "patched_sha256": "86348b50e9360990ad8eb0010f864a084ff82efe261cbad2f4c84997555d8c15"
+      },
+      {
+        "path": "llvm/lib/CodeGen/LiveIntervalCalc.cpp",
+        "original_sha256": "0b1dc70db164e4f29e17d4591109aaf28af9c1659e66fa63d7d0245741fca3fd",
+        "patched_sha256": "dd2316fdec0c2c180de558fe6927949de8672145cbe54cecbecb78d56c2509d9"
+      },
+      {
+        "path": "llvm/lib/CodeGen/LiveRangeCalc.cpp",
+        "original_sha256": "488835859c75a928248965f55b61c8003c1792aabe9c3ca4f4d2c79ffb897ad4",
+        "patched_sha256": "488835859c75a928248965f55b61c8003c1792aabe9c3ca4f4d2c79ffb897ad4"
+      },
+      {
+        "path": "llvm/lib/CodeGen/LiveInterval.cpp",
+        "original_sha256": "a9080a1cce208a9f6bb7e05446cbb9cf8f8d0f42ee73940ce35cd79e98ae8126",
+        "patched_sha256": "27f26e1aec5eb5b976860b48f0bacc64b5d58e412e38a4a3efbf0379524fd6fe"
+      },
+      {
+        "path": "llvm/lib/CodeGen/SelectionDAG/ScheduleDAGRRList.cpp",
+        "original_sha256": "e538031aa3d7752db793ddf775710540f5632b2e637a017271ece3483f019180",
+        "patched_sha256": "e538031aa3d7752db793ddf775710540f5632b2e637a017271ece3483f019180"
+      },
+      {
+        "path": "llvm/lib/CodeGen/ScheduleDAG.cpp",
+        "original_sha256": "9bc7bda2020e39bcecc3117095221610439b2eb47a8d58cd1163ed896a257280",
+        "patched_sha256": "045c38dfad360037f7bea8345eada27ae5ab18ad10e9b50a2b1aadd90347b017"
+      },
+      {
+        "path": "llvm/lib/CodeGen/TwoAddressInstructionPass.cpp",
+        "original_sha256": "92df35a958d1d7246d0e485e5e868e1247c72e59125adae8bc9ee1f0c8eb34f0",
+        "patched_sha256": "92df35a958d1d7246d0e485e5e868e1247c72e59125adae8bc9ee1f0c8eb34f0"
+      },
+      {
+        "path": "llvm/lib/CodeGen/MachineRegisterInfo.cpp",
+        "original_sha256": "4abcc13a4ad4d2ad57792f3e0f9109be1ddddfe2abe7f368b9cc2870147b102c",
+        "patched_sha256": "eb3764a53662482d575f123704e4767575ba2accc01f7a48a9ca56c81fcb6fd4"
+      }
+    ],
+    "driver_source": {
+      "path": "llvm/tools/llc/llc.cpp",
+      "source": "https://raw.githubusercontent.com/llvm/llvm-project/a17069fea5b271c6824ea773874b007116de9644/llvm/tools/llc/llc.cpp",
+      "sha256": "ed9c8bacee5bef645b7877b3db34cf31280913abd9ad51a49c8c2fb78df3cfe5"
+    },
+    "private_include_directories": [
+      "llvm/include",
+      "llvm/lib/CodeGen"
+    ],
+    "patched_public_header": {
+      "path": "llvm/include/llvm/CodeGen/MachineRegisterInfo.h",
+      "original_sha256": "e7474a2f20427e557ef45d38daf42886bec93f2aeb4b88c9cfcac7a0ebde7d8c",
+      "patched_sha256": "8b57714889c47609546bc9c8714be3f428f4599dfb7a48f095c4ba318f4b9d1f"
+    },
+    "required_additional_object": "MachineRegisterInfo.cpp.o",
+    "public_include_precedence": "patched source llvm/include before installed SDK include",
+    "class_layout_virtual_or_existing_inline_body_changes": false,
+    "compiler_mode": "Release clang18; no PGO, LTO or native host targeting additions",
+    "experimental_threading_statistics_or_LLC_flags": false,
+    "applies_to_patches": [
+      "0001-codegen-skip-repeated-schedule-dag-visits.patch",
+      "0002-codegen-skip-use-scan-without-subregister-tracking.patch",
+      "0003-codegen-skip-slot-prefix-before-live-range.patch",
+      "0004-analysis-index-lvi-value-block-membership.patch",
+      "0005-vectorize-group-alias-cache-by-source.patch",
+      "0006-codegen-collect-physical-register-use-suffix.patch",
+      "0007-codegen-search-scheduling-reachability-bidirectionally.patch"
+    ],
+    "recipe_scope": "Legacy0001--0007 SDK overlay only; use a separate pinned source root with exactly this patch subset.",
+    "expected_source_hash_policy": "Retain every original implementation_sources original/patched hash below. Global full-series patched source hashes do not override this legacy recipe.",
+    "supports_0008_to_0010": false
+  },
+  "backend_suffix_validation": {
+    "applies_to_patches": [
+      "0006-codegen-collect-physical-register-use-suffix.patch"
+    ],
+    "selected_variant": "minimal physical-use suffix only",
+    "status": "accepted_in_prior_code_preserving_four_target_delivery",
+    "default_on_guard": "Reg.isPhysical() && Mask.all()",
+    "generic_MRI_collection_order_and_append_prefix_checked": true,
+    "genuine_SDK_oracle_cases": [
+      "repeated uses",
+      "tied early-clobber",
+      "virtual subregister lanes",
+      "PHI predecessor diamond",
+      "bundles and debug uses",
+      "physical definitions/uses with tied early-clobber, undef and debug operands"
+    ],
+    "complete_live_intervals_and_every_machine_operand_flag_byte_exact": true,
+    "original_extension_call_sequence_preserved_by_construction": true,
+    "physical_subregister_contract": "MachineVerifier rejects nonzero subregister indexes on physical registers; full physical definitions therefore do not read the old register value",
+    "isolated_boom_backend": {
+      "selected_baseline_median_seconds_rounded": 92.91,
+      "minimal_median_seconds": 90.1868,
+      "change_percent": -2.93,
+      "all_model_objects_byte_exact": true,
+      "scope": "LLVM backend stage only. Not an optimizer-stage, complete-build, simulation-runtime, or all-configuration speed claim."
+    },
+    "fresh_all_four_full_build_runtime_qualification_pending": false,
+    "discarded_variants_retained_only_as_private_evidence": [
+      "parallel use-query planning",
+      "scalar canonical-instruction and last-MI shortcuts",
+      "compiler BOLT variants"
+    ],
+    "tests_included": false,
+    "accepted_delivery": {
+      "delivery": "native-compiler-only-20261026T010301Z",
+      "report": "/home/ubuntu/chipyard/sims/arcilator/output/development/native-compiler-only-20261026T010301Z/build-preservation-report.md",
+      "report_sha256": "d11ee048fb84003a73520fb8ef3ec5a488f150f09ee32b241e96f1f9efbce369",
+      "independent_review": "/home/ubuntu/chipyard/sims/arcilator/output/development/native-compiler-only-20261026T010301Z/root-final-review.json",
+      "independent_review_sha256": "5bc0e91fb317a0ef04063343836f56cfae95ce69444936ce8f62edf1bd12c58f",
+      "scope": "Legacy1\u20137 bundle accepted with exact four model objects/matched load images and tested scalar semantics; historical microbenchmarks remain separately scoped."
+    }
+  },
+  "backend_reachability_validation": {
+    "applies_to_patches": [
+      "0007-codegen-search-scheduling-reachability-bidirectionally.patch"
+    ],
+    "status": "accepted_in_prior_code_preserving_four_target_delivery",
+    "algorithm": "bidirectional smaller-frontier search within current topological interval",
+    "unchanged_contracts": [
+      "original negative cache only and its invalidation",
+      "original DFS and visited-set semantics for AddPred/Shift",
+      "no graph, MI, liveness or register-allocation mutation"
+    ],
+    "public_header_or_class_layout_changes": false,
+    "threading_flags_statistics_or_persistent_cache_added": false,
+    "prototype_genuine_SDK_oracle": {
+      "independent_reachability": true,
+      "complete_public_order_and_query_trace_byte_exact": true,
+      "queued_updates_and_dirty_reinitialization": true,
+      "unnotified_edge_removal": true,
+      "GetSubGraph_and_WillCreateCycle_after_query": true,
+      "backward_direction_fault_detected": true
+    },
+    "isolated_boom_prototype_backend": {
+      "runs_per_compiler": 2,
+      "selected_baseline_median_seconds": 91.1112350350013,
+      "bidirectional_median_seconds": 87.47114426392363,
+      "change_percent": -3.99521614395776,
+      "all_model_objects_byte_exact": true,
+      "scope": "Backend stage only; prototype flags enabled. Cleaned source passed all4 exact objects and was included in the accepted legacy bundle; this prototype percentage is not an isolated timing claim for the cleaned bundle."
+    },
+    "fresh_all_four_whole_object_qualification_pending": false,
+    "fresh_all_four_full_build_runtime_qualification_pending": false,
+    "tests_included": false,
+    "default_on_cleanup_genuine_oracle_repeats": 3,
+    "default_on_cleanup_complete_public_trace_byte_exact": true,
+    "first_six_patch_bytes_preserved": true,
+    "pinned_patch_series_reconstruction_exact": true,
+    "whole_model_object_byte_identity": [
+      "RocketConfig",
+      "MegaBoomV3Config",
+      "REFV256D128RocketConfig",
+      "ShuttleConfig"
+    ],
+    "accepted_delivery": {
+      "delivery": "native-compiler-only-20261026T010301Z",
+      "report": "/home/ubuntu/chipyard/sims/arcilator/output/development/native-compiler-only-20261026T010301Z/build-preservation-report.md",
+      "report_sha256": "d11ee048fb84003a73520fb8ef3ec5a488f150f09ee32b241e96f1f9efbce369",
+      "independent_review": "/home/ubuntu/chipyard/sims/arcilator/output/development/native-compiler-only-20261026T010301Z/root-final-review.json",
+      "independent_review_sha256": "5bc0e91fb317a0ef04063343836f56cfae95ce69444936ce8f62edf1bd12c58f",
+      "scope": "Legacy1\u20137 bundle accepted with exact four model objects/matched load images and tested scalar semantics; historical microbenchmarks remain separately scoped."
+    }
+  },
+  "status": "pinned_source_and_compiler_output_qualified_separate_delivery_acceptance_required",
+  "patched_build_support_sources": {
+    "llvm/utils/extract_symbols.py": "26309ae8758eb825dc598cdda8b5a8e343196c1dc56f5571e122725d042e738c"
+  },
+  "full_source_combined_recipe": {
+    "status": "all_four_and_actual_API_qualified_with_separate_stage_timing_evidence",
+    "applies_to_patches": [
+      "0001-codegen-skip-repeated-schedule-dag-visits.patch",
+      "0002-codegen-skip-use-scan-without-subregister-tracking.patch",
+      "0003-codegen-skip-slot-prefix-before-live-range.patch",
+      "0004-analysis-index-lvi-value-block-membership.patch",
+      "0005-vectorize-group-alias-cache-by-source.patch",
+      "0006-codegen-collect-physical-register-use-suffix.patch",
+      "0007-codegen-search-scheduling-reachability-bidirectionally.patch",
+      "0008-analysis-short-circuit-edge-dominance.patch",
+      "0009-codegen-parallelize-initial-scalar-live-ranges.patch",
+      "0010-build-skip-hidden-IR-profile-alias-exports.patch",
+      "0011-analysis-prune-memoryssa-traversal-frames.patch",
+      "0012-transforms-skip-impossible-dominated-use-walks.patch",
+      "0013-codegen-index-source-order-ready-prefix.patch"
+    ],
+    "construction": "Full pinned LLVM source build, not extension of either legacy overlay recipe.",
+    "public_header_hash_scope": "Global patched_header_sources includes the patch0003 documentation-only LiveInterval.h hash previously omitted. MRI additive API header retains its existing exact hash. No public class layout change.",
+    "instrumentation": "Fresh frontend PGO instrumented compiler with atomic profile counter updates; matching frontend profile use. IR-PGO COMDAT hash mismatch attempts remain failed and are not reused.",
+    "instrumented_cmake_option": "LLVM_BUILD_INSTRUMENTED=Frontend",
+    "instrumented_compile_option": "-fprofile-update=atomic",
+    "training_and_selected_llc_flags": [
+      "-parallel-virtreg-liveness-jobs=4"
+    ],
+    "default_parallel_jobs": 0,
+    "profile_reuse": false,
+    "profile_requirements": [
+      "Fresh source/config/SDK/tool fingerprints; match instrumentation kind, atomic update mode, tuning and LTO mode.",
+      "Retain strict profile diagnostics; no mismatch suppression or profile rewriting.",
+      "SDK-built plugins and generated ABI macro checks; all four complete object identity gates.",
+      "Independent training and held-out validation manifests; exact new source inventory and input artifacts reverified."
+    ],
+    "tests_in_upstream_payload": false,
+    "profile_list": {
+      "portable_filename": "frontend-implementation.profile-list",
+      "sha256": "9b6f202f5cb70eaf865f59da330ced47abe7ee18b07fa55571652c9cffb4b632",
+      "exact_bytes_generation_and_use": true
+    },
+    "coverage_warning_policy": "Only explicitly recorded missing-file profile coverage may be nonfatal and remains visible. Outdated/CFG/hash/COMDAT mismatches and other diagnostics remain fatal; no warnings or profile bytes hidden or rewritten.",
+    "current_qualified_variants": {
+      "ThinLTO_filtered_frontend_atomic": {
+        "path": "/tmp/arcilator-llvm-prune/combined-full/root-readiness.json",
+        "sha256": "f252e737ba64b8501b82cbf1b15faf0e0846ed0ac00c81e248daf391d1779502"
+      }
+    },
+    "isolated_optimizer_selection": {
+      "record": {
+        "path": "/tmp/arcilator-llvm-prune/pgo-benchmarks/opt-abba/result.json",
+        "sha256": "20c7710f6a56c3d3a3f9a634bd9779b292388dc0e04b07701eca11c5f5957513"
+      },
+      "summary": {
+        "baseline": {
+          "median_wall_seconds": 49.03243061393732,
+          "median_CPU_seconds": 48.97,
+          "wall_seconds_range": [
+            48.565976690966636,
+            49.49888453690801
+          ],
+          "max_rss_kb": 797696,
+          "all_outputs_exact": true,
+          "wall_change_percent": 0.0
+        },
+        "candidate": {
+          "median_wall_seconds": 47.809980882448144,
+          "median_CPU_seconds": 47.75,
+          "wall_seconds_range": [
+            47.463553449953906,
+            48.15640831494238
+          ],
+          "max_rss_kb": 803108,
+          "all_outputs_exact": true,
+          "wall_change_percent": -2.4931452840147417
+        }
+      },
+      "scope": "Two balanced BOOM OPT samples/tool against the accepted PGO compiler; no full-build or runtime claim."
+    },
+    "activation_requirement": "Before selecting or activating a compiler pair, require an accepted fresh complete build/runtime delivery report binding exact tools, source/profile/configuration identities and qualification/performance scope. Construction/API qualification or isolated timings alone are insufficient.",
+    "tool_pair_selection_scope": "Select OPT and LLC independently from measured qualified variants; the accepted delivery report identifies the chosen pair and Make flags.",
+    "evidence_does_not_establish": [
+      "Fresh complete simulator-build/runtime delivery acceptance; reported separately.",
+      "Universal configuration, binary, target or host performance guarantees."
+    ],
+    "private_header_hash_scope": "patched_private_header_sources records the new SourceOrderPrefix implementation header; existing public/header/build-support hashes remain unchanged.",
+    "fresh_profile_readiness": {
+      "path": "/tmp/arcilator-llvm-prune/combined-full/training/profile.json",
+      "sha256": "d6b94a6bfcb648de1cdcb152b8abe03b13ba5a9624f843513e22e3cb1179a86d"
+    },
+    "fresh_full_compiler_qualification": {
+      "path": "/tmp/arcilator-llvm-prune/combined-full/root-readiness.json",
+      "sha256": "f252e737ba64b8501b82cbf1b15faf0e0846ed0ac00c81e248daf391d1779502"
+    },
+    "fresh_quiet_tool_selection": {
+      "path": "/tmp/arcilator-llvm-prune/selection.json",
+      "sha256": "267115bf24fd4ebde4741d91eb9001d8941412b7ddbbf4541b2dde3aa1315151"
+    },
+    "fresh_complete_build_runtime_acceptance": {
+      "scope": "Separate delivery gate; require accepted build-preservation report and handoff for these tools before activation."
+    },
+    "pending_gates": [
+      "Separate fresh complete simulator-build/runtime delivery acceptance."
+    ],
+    "isolated_algorithm_evidence": "new_patch_validation 0011--0013 records matched Release single-stage results only. Their percentages are not additive and are not measurements of the new full PGO toolchain.",
+    "isolated_backend_selection": {
+      "record": {
+        "path": "/tmp/arcilator-llvm-prune/pgo-benchmarks/llc-abba/result.json",
+        "sha256": "c0209adbbee0d792c798461374619d16428a251fa6371f73b52183cb0d744543"
+      },
+      "summary": {
+        "baseline": {
+          "median_wall_seconds": 80.99279325501993,
+          "median_CPU_seconds": 83.36500000000001,
+          "wall_seconds_range": [
+            80.25953581300564,
+            81.72605069703422
+          ],
+          "max_rss_kb": 2011708,
+          "all_outputs_exact": true,
+          "wall_change_percent": 0.0
+        },
+        "candidate": {
+          "median_wall_seconds": 78.7695266235387,
+          "median_CPU_seconds": 81.14000000000001,
+          "wall_seconds_range": [
+            78.21339499705937,
+            79.32565825001802
+          ],
+          "max_rss_kb": 2012232,
+          "all_outputs_exact": true,
+          "wall_change_percent": -2.7450178492806065
+        }
+      },
+      "scope": "Two balanced BOOM LLC samples/tool against the accepted PGO compiler, parallel4 on both; no full-build or runtime claim."
+    }
+  },
+  "new_patch_validation": {
+    "0008": {
+      "status": "source_and_output_qualified_separate_delivery_acceptance_required",
+      "source_qualification": "/tmp/arcilator-llvm-scale2/algorithm/dom-edge/qualification-manifest.json",
+      "quiet_change_percent": -1.799461498304089,
+      "scope": "Matched Release original/patched Dominators, BOOM optimizer stage only; not comparison against current selected PGO optimizer and not a full-build result. Both independent balanced-suite medians improved; all samples retained."
+    },
+    "0009": {
+      "status": "source_and_output_qualified_separate_delivery_acceptance_required",
+      "manifest": "/tmp/arcilator-llvm-scale2/parallel-analysis/package-v3-final/manifest.json",
+      "manifest_sha256": "212f405fb6d103a6b6ae13398a343e2bebbdef71ee309269ef4e023156d5cddf",
+      "selected_workers": 4,
+      "quiet_whole_backend_change_percent": -1.5787464379218852,
+      "scope": "BOOM LLVM backend only; two balanced samples/mode; all4 exact objects; no significant4-versus16 claim."
+    },
+    "0010": {
+      "status": "source_and_output_qualified_separate_delivery_acceptance_required",
+      "manifest": "/tmp/arcilator-llvm-scale2/full-toolchain/dom-edge-manifest.json",
+      "manifest_sha256": "dce63f061c5840d750a04ca45339541df92092fb1a753ad294fdf8dc43b2d6a7",
+      "scope": "Skip hidden mangled COMDAT address aliases ending .local from plugin export extraction; preserve actual public functions. Not a runtime or algorithm speedup."
+    },
+    "0011": {
+      "algorithm": "Eliminate leaf and exhausted-tail MemorySSA DFS frames while retaining every visited/rename/setter operation and original traversal order.",
+      "pinned_iterator_contract": "GenericDomTree sibling-pointer child iterator: a default iterator is end, increment follows Sibling; no iterator into an invalidated child vector is retained.",
+      "proof": "45 actual API cases; independent per-renamePass DFS/parent-state/completeness checks; 30 deterministic exact event/use-list streams; MemorySSA verifier/walker checks; sibling-state-leak, drop-last-child and skip-same-setter faults detected.",
+      "output_scope": "Initial BOOM canonical IR, raw BC and whole model.o exact; separately retained remaining-three replay now passes canonical IR and whole model.o. Together these records qualify all four models for the MemorySSA prototype only, not the new combined full PGO compiler.",
+      "all_four_prototype_canonical_IR_and_model_objects_exact": true,
+      "limits": "Original pointer-keyed Phi-root iteration can vary between processes; no global random cross-process trace-equivalence claim. Actual renamePass checks run in-process without normalizing away events.",
+      "records": [
+        {
+          "path": "/tmp/arcilator-llvm-prune/memoryssa/qualification-manifest.json",
+          "sha256": "41ef215979b79c591af181934478768db320987e39270bab9189ce0aa304441b"
+        },
+        {
+          "path": "/tmp/arcilator-llvm-prune/memoryssa/qualification-other3/result.json",
+          "sha256": "420f02118c407b62fdd39b727ce6cbe3d17d22e8f7a9ef674bb29379d5f2bc88"
+        },
+        {
+          "path": "/tmp/arcilator-llvm-prune/memoryssa/oracle-v3/result.json",
+          "sha256": "7e7ff086f48fd33e2ed812c2322be81bba27d41f5b1940b762f3bada0a56f960"
+        },
+        {
+          "path": "/tmp/arcilator-llvm-prune/memoryssa/oracle-v3/mutants.json",
+          "sha256": "ca45dc882dc29793a91e13520c7a01b36ad87191d8ba6fa3efe77eef24560d35"
+        },
+        {
+          "path": "/tmp/arcilator-llvm-prune/package-independent-replay.json",
+          "sha256": "db6b7ad2b7a1f8f9855bd4f4edf91e4a3befa8807f73bf5343448fade1de4c17"
+        }
+      ],
+      "matched_release_timing": {
+        "evidence": {
+          "path": "/tmp/arcilator-llvm-prune/memoryssa/quiet-abba/result.json",
+          "sha256": "9ad18b4763282b43c4c0f116e8f3a39a34e49c54291e304b000ec5c531ba5f8f"
+        },
+        "scope": "BOOM isolated compiler stage; matched SDK-linked Release controls; two balanced runs per tool; no complete-build or runtime claim",
+        "baseline": {
+          "median_wall_seconds": 72.50096273049712,
+          "median_CPU_seconds": 72.44500000000001,
+          "wall_seconds_range": [
+            72.39281618304085,
+            72.6091092779534
+          ],
+          "max_rss_kb": 838992,
+          "all_outputs_exact": true,
+          "wall_change_percent": 0.0
+        },
+        "candidate": {
+          "median_wall_seconds": 71.5331641639932,
+          "median_CPU_seconds": 71.47999999999999,
+          "wall_seconds_range": [
+            70.96579424897209,
+            72.10053407901432
+          ],
+          "max_rss_kb": 845660,
+          "all_outputs_exact": true,
+          "wall_change_percent": -1.3348768486033058
+        },
+        "percentages_additive": false
+      }
+    },
+    "0012": {
+      "algorithm": "For multi-use values, reject the entire dominated-edge use walk only when the edge destination contains no PHIs and the edge does not dominate that destination. Keep empty/single-use and all other cases on the original path.",
+      "side_effect_contract": "The guard proves every replacement predicate false, so no ShouldReplace callback or replacement is skipped. No callback/query-result factoring is included.",
+      "proof": "Exact actual-API IR/use-order/callback trace; all four prototype canonical IR and whole model.o exact. Removing the selected no-PHI exception guard is detected by the source mutation test.",
+      "mutation_scope": "The separately retained callback-invalidation mutation applies to the rejected query-factoring prototype; it is not claimed as a mutation of selected 0012.",
+      "records": [
+        {
+          "path": "/tmp/arcilator-llvm-prune/edge-uses/oracle-result.json",
+          "sha256": "f91af5ba4a03d0f4f4ffb3aadc68a2d5b46f355fdda432a5b4ae27b37856e941"
+        },
+        {
+          "path": "/tmp/arcilator-llvm-prune/edge-uses/mutants/result.json",
+          "sha256": "c271a6e3b673ed7213cb0558de9345cfa48a7b9f15538abf7283ac041779a758"
+        },
+        {
+          "path": "/tmp/arcilator-llvm-prune/edge-uses/no-phi/qualification/result.json",
+          "sha256": "8e521d6d2af8bf9fc20a832944e56804f970c51601a765557ecf8ec80fe25e60"
+        },
+        {
+          "path": "/tmp/arcilator-llvm-prune/edge-uses/independent-review.json",
+          "sha256": "27092d36c4f608e4a506d373889be184de47b744fa6c6cfef9cb3cef57455e0c"
+        }
+      ],
+      "matched_release_timing": {
+        "evidence": {
+          "path": "/tmp/arcilator-llvm-prune/edge-uses/quiet-balanced/result.json",
+          "sha256": "ae1780bc44a66b86710beb55de857eba37ea307a00033b58e6bac551c742f055"
+        },
+        "scope": "BOOM isolated compiler stage; matched SDK-linked Release controls; two balanced runs per tool; no complete-build or runtime claim",
+        "baseline": {
+          "median_wall_seconds": 73.60491810709937,
+          "median_CPU_seconds": 73.545,
+          "wall_seconds_range": [
+            73.5519650070928,
+            73.65787120710593
+          ],
+          "max_rss_kb": 847620,
+          "all_outputs_exact": true,
+          "wall_change_percent": 0.0
+        },
+        "candidate": {
+          "median_wall_seconds": 72.20692810299806,
+          "median_CPU_seconds": 72.14500000000001,
+          "wall_seconds_range": [
+            71.90297219506465,
+            72.51088401093148
+          ],
+          "max_rss_kb": 847740,
+          "all_outputs_exact": true,
+          "wall_change_percent": -1.8993160240558193
+        },
+        "percentages_additive": false
+      }
+    },
+    "0013": {
+      "algorithm": "Index only the highest static source-order category inside the existing first-1000 ready-list prefix, then apply the original dynamic comparator to its candidates in their original vector order. Use the original fold for small or broad-tie prefixes.",
+      "side_effect_contract": "Source-order scheduler uses the no-op hazard recognizer. Remaining omitted queries read graph priorities and deterministic lazy depth/height caches, not scheduling decisions. Original nontransitive dynamic fold, cap, zero-order priority and swap/pop semantics are preserved; CSE/queue lifecycle invalidates the private prefix index.",
+      "proof": "All four whole prototype objects exact with actual-pop original-fold verification. Private-header oracle compared original selection through 57040 pops and adversarial mutation/boundary/lifecycle cases; six unsafe source mutations detected.",
+      "remaining_gate": "Fresh combined verifier-off all-four object and production plugin/API qualification passed; full_source_combined_recipe binds the evidence. Complete build/runtime acceptance is a separate delivery gate.",
+      "private_header_provenance": {
+        "prototype": "/tmp/arcilator-llvm-prune/scheduler/v2/SourceOrderPrefix.h",
+        "prototype_sha256": "77e1914ac9d6f2d4af8cec7284de010f8828c6e73a111862b33399eec1cde71c",
+        "packaged_sha256": "2958f1ad504ce5f1171075c3218d7f3d81b486a3295857279eb306550da92bc2",
+        "previous_sha256": null,
+        "change_from_prototype": "LLVM license comment only"
+      },
+      "records": [
+        {
+          "path": "/tmp/arcilator-llvm-prune/scheduler/v2/qualification-ready.json",
+          "sha256": "7be50e127bc335de30546f99682bc3bc62bb461b666dde9ce374d8da489a97a0"
+        },
+        {
+          "path": "/tmp/arcilator-llvm-prune/scheduler/v2/oracle-results/result.json",
+          "sha256": "65aaf8f2c7f91430d28305a689f5831063c3e345178a4279733f85cbd22e5e10"
+        },
+        {
+          "path": "/tmp/arcilator-llvm-prune/package-independent-replay.json",
+          "sha256": "db6b7ad2b7a1f8f9855bd4f4edf91e4a3befa8807f73bf5343448fade1de4c17"
+        }
+      ],
+      "matched_release_timing": {
+        "evidence": {
+          "path": "/tmp/arcilator-llvm-prune/scheduler/v2/quiet-abba/result.json",
+          "sha256": "ea9a6eedeac47e30062b7a9e37643a5943498b2e40299b5d16abc292a99495e8"
+        },
+        "scope": "BOOM isolated compiler stage; matched SDK-linked Release controls; two balanced runs per tool; no complete-build or runtime claim",
+        "baseline": {
+          "median_wall_seconds": 86.57602807902731,
+          "median_CPU_seconds": 89.60000000000001,
+          "wall_seconds_range": [
+            86.47927889204584,
+            86.67277726600878
+          ],
+          "max_rss_kb": 2007480,
+          "all_outputs_exact": true,
+          "wall_change_percent": 0.0
+        },
+        "candidate": {
+          "median_wall_seconds": 82.37130346352933,
+          "median_CPU_seconds": 85.39500000000001,
+          "wall_seconds_range": [
+            81.5606108980719,
+            83.18199602898676
+          ],
+          "max_rss_kb": 2008308,
+          "all_outputs_exact": true,
+          "wall_change_percent": -4.856684591328064
+        },
+        "percentages_additive": false
+      }
+    }
+  },
+  "excluded_private_experiments": [
+    "Out-of-line optional raw SlotIndexes lookup: whole backend +1.328%, not selected.",
+    "Inline optional raw SlotIndexes lookup: -0.286% within control spread, inconclusive/not selected.",
+    "Failed/mismatched IR-PGO attempts; their artifacts remain evidence, never merged into selected frontend profiles."
+  ],
+  "full_source_qualification_scope": "Fresh combined ThinLTO filtered frontend/atomic compiler passes all four exact canonical IR/model objects with the scheduler verifier disabled, and fresh production plugin/codegen API checks. Complete simulator build/runtime acceptance remains a separate delivery gate.",
+  "prior_manifest_provenance": {
+    "delivery": "native-compiler-only-20261026T010301Z",
+    "sha256": "562eaa37a99bf854a6fe624c2fe3b26ff5bc944b90f712574a164ad7b25240e8",
+    "scope": "Previously accepted manifest for the legacy0001\u20130007 source/overlay recipes."
+  },
+  "patched_private_header_sources": {
+    "llvm/lib/CodeGen/SelectionDAG/SourceOrderPrefix.h": "2958f1ad504ce5f1171075c3218d7f3d81b486a3295857279eb306550da92bc2"
+  },
+  "private_header_scope": {
+    "SourceOrderPrefix.h": "New LLVM-licensed implementation helper under llvm/lib/CodeGen/SelectionDAG; not an installed/public header. Its packaged bytes differ from the tested prototype only by the LLVM license comment.",
+    "public_header_delta_0011_0013": false,
+    "public_class_layout_delta_0011_0013": false
+  },
+  "historical_full_source_combined_recipe_0001_0010": {
+    "status": "all_four_and_actual_API_qualified_with_separate_stage_timing_evidence",
+    "applies_to_patches": [
+      "0001-codegen-skip-repeated-schedule-dag-visits.patch",
+      "0002-codegen-skip-use-scan-without-subregister-tracking.patch",
+      "0003-codegen-skip-slot-prefix-before-live-range.patch",
+      "0004-analysis-index-lvi-value-block-membership.patch",
+      "0005-vectorize-group-alias-cache-by-source.patch",
+      "0006-codegen-collect-physical-register-use-suffix.patch",
+      "0007-codegen-search-scheduling-reachability-bidirectionally.patch",
+      "0008-analysis-short-circuit-edge-dominance.patch",
+      "0009-codegen-parallelize-initial-scalar-live-ranges.patch",
+      "0010-build-skip-hidden-IR-profile-alias-exports.patch"
+    ],
+    "construction": "Full pinned LLVM source build, not extension of either legacy overlay recipe.",
+    "public_header_hash_scope": "Global patched_header_sources includes the patch0003 documentation-only LiveInterval.h hash previously omitted. MRI additive API header retains its existing exact hash. No public class layout change.",
+    "instrumentation": "Fresh frontend PGO instrumented compiler with atomic profile counter updates; matching frontend profile use. IR-PGO COMDAT hash mismatch attempts remain failed and are not reused.",
+    "instrumented_cmake_option": "LLVM_BUILD_INSTRUMENTED=Frontend",
+    "instrumented_compile_option": "-fprofile-update=atomic",
+    "training_and_selected_llc_flags": [
+      "-parallel-virtreg-liveness-jobs=4"
+    ],
+    "default_parallel_jobs": 0,
+    "profile_reuse": false,
+    "profile_requirements": [
+      "Fresh source/config/SDK/tool fingerprints; match instrumentation kind, atomic update mode, tuning and LTO mode.",
+      "Retain strict profile diagnostics; no mismatch suppression or profile rewriting.",
+      "SDK-built plugins and generated ABI macro checks; all four complete object identity gates.",
+      "Independent training and held-out validation manifests; exact new source inventory and input artifacts reverified."
+    ],
+    "tests_in_upstream_payload": false,
+    "profile_list": {
+      "portable_filename": "frontend-implementation.profile-list",
+      "sha256": "9b6f202f5cb70eaf865f59da330ced47abe7ee18b07fa55571652c9cffb4b632",
+      "exact_bytes_generation_and_use": true
+    },
+    "coverage_warning_policy": "Only explicitly recorded missing-file profile coverage may be nonfatal and remains visible. Outdated/CFG/hash/COMDAT mismatches and other diagnostics remain fatal; no warnings or profile bytes hidden or rewritten.",
+    "current_qualified_variants": {
+      "plain_filtered_frontend_atomic": {
+        "readiness": "/tmp/arcilator-llvm-scale2/full-toolchain/plain-pgo-ready.json",
+        "sha256": "d51fac03d13e4fa20b97d91000cc0ceae34e131c24697f7fa6bc14878528bd64"
+      },
+      "ThinLTO_filtered_frontend_atomic": {
+        "readiness": "/tmp/arcilator-llvm-scale2/full-toolchain/portable-thin-integration-ready.json",
+        "sha256": "82990b2e732bf808491fbf0f8cccf0ee68d03254a02f3c7aae61bc6b7f17c828"
+      }
+    },
+    "isolated_optimizer_selection": {
+      "scope": "BOOM optimizer stage, two balanced samples/variant, exact optimized outputs; construction/training excluded. Not a full simulator build or universal speed claim.",
+      "selection": "ThinLTO variant had the lowest median in this isolated BOOM OPT comparison; final activation follows accepted delivery evidence.",
+      "record": "/tmp/arcilator-llvm-scale2/validation/full-compiler-opt-quiet/result.json",
+      "record_sha256": "4fce5bc4007bc6826a83880bfeade88e26b26776d954bfcdadfe63dcc370ec9b",
+      "summary": {
+        "baseline": {
+          "median_wall_seconds": 53.240167014009785,
+          "median_CPU_seconds": 53.2,
+          "wall_seconds_range": [
+            51.96051657292992,
+            54.51981745508965
+          ],
+          "max_rss_kb": 796676,
+          "all_outputs_exact": true,
+          "wall_change_percent": 0.0
+        },
+        "plain": {
+          "median_wall_seconds": 52.83955487498315,
+          "median_CPU_seconds": 52.765,
+          "wall_seconds_range": [
+            52.567650428041816,
+            53.111459321924485
+          ],
+          "max_rss_kb": 793568,
+          "all_outputs_exact": true,
+          "wall_change_percent": -0.7524622132030756
+        },
+        "thin": {
+          "median_wall_seconds": 49.98207656049635,
+          "median_CPU_seconds": 49.915000000000006,
+          "wall_seconds_range": [
+            48.905331504996866,
+            51.05882161599584
+          ],
+          "max_rss_kb": 805824,
+          "all_outputs_exact": true,
+          "wall_change_percent": -6.119609753771227
+        }
+      }
+    },
+    "activation_requirement": "Before selecting or activating a compiler pair, require an accepted fresh complete build/runtime delivery report binding exact tools, source/profile/configuration identities and qualification/performance scope. Construction/API qualification or isolated timings alone are insufficient.",
+    "tool_pair_selection_scope": "Select OPT and LLC independently from measured qualified variants; the accepted delivery report identifies the chosen pair and Make flags.",
+    "evidence_does_not_establish": [
+      "Fresh complete simulator build/runtime acceptance",
+      "Full clean/cached simulator build speed",
+      "Simulation runtime change",
+      "Universal target or configuration speedup"
+    ]
+  },
+  "historical_full_source_qualification_scope_0001_0010": "Both plain and Thin filtered-frontend/atomic compilers pass all4 exact model objects/canonical IR, fresh SDK-plugin loading and actual production codegen API integration. Fresh complete simulator build/runtime acceptance is a separate delivery gate.",
+  "historical_full_source_hashes_0001_0010": {
+    "original_sources": {
+      "llvm/lib/CodeGen/ScheduleDAG.cpp": "9bc7bda2020e39bcecc3117095221610439b2eb47a8d58cd1163ed896a257280",
+      "llvm/lib/CodeGen/LiveIntervalCalc.cpp": "0b1dc70db164e4f29e17d4591109aaf28af9c1659e66fa63d7d0245741fca3fd",
+      "llvm/lib/CodeGen/LiveInterval.cpp": "a9080a1cce208a9f6bb7e05446cbb9cf8f8d0f42ee73940ce35cd79e98ae8126",
+      "llvm/include/llvm/CodeGen/LiveInterval.h": "1993eb4f65f7d6ab4cc4fef8816d72a0b5a483d6baabdd5194a17fd4f1939501",
+      "llvm/lib/Transforms/Vectorize/SLPVectorizer.cpp": "124d88be63a6d9aa8bb2301d44847495e7a4f38bc6fd8e59132b8162cc4f12cd",
+      "llvm/lib/Analysis/LazyValueInfo.cpp": "8298e03f566b88b2d93e0d32f09037e879d5be13dd704adadcef27f0a960faad",
+      "llvm/lib/CodeGen/MachineRegisterInfo.cpp": "4abcc13a4ad4d2ad57792f3e0f9109be1ddddfe2abe7f368b9cc2870147b102c",
+      "llvm/include/llvm/CodeGen/MachineRegisterInfo.h": "e7474a2f20427e557ef45d38daf42886bec93f2aeb4b88c9cfcac7a0ebde7d8c",
+      "llvm/lib/IR/Dominators.cpp": "10c2c04dd954ae87a179d43ab1b1c135164549fede3eebc010480487538b5f16",
+      "llvm/lib/CodeGen/LiveIntervals.cpp": "b7f30d07d426ba6761f9a4190194906e0a6aebb473606ef182e0ecb2064e9878",
+      "llvm/utils/extract_symbols.py": "33dc97d0330fe6389808bda31c20d756288a9c31d9d22822a80144fab91815a4"
+    },
+    "patched_cpp_sources": {
+      "llvm/lib/CodeGen/ScheduleDAG.cpp": "045c38dfad360037f7bea8345eada27ae5ab18ad10e9b50a2b1aadd90347b017",
+      "llvm/lib/CodeGen/LiveIntervalCalc.cpp": "dd2316fdec0c2c180de558fe6927949de8672145cbe54cecbecb78d56c2509d9",
+      "llvm/lib/CodeGen/LiveInterval.cpp": "27f26e1aec5eb5b976860b48f0bacc64b5d58e412e38a4a3efbf0379524fd6fe",
+      "llvm/lib/Transforms/Vectorize/SLPVectorizer.cpp": "b60b8889b4997426a5a605f898a1d6232fc2a7782d639b450ae114bfa10160c5",
+      "llvm/lib/Analysis/LazyValueInfo.cpp": "9b333873a0083fe457282ba78f60a0e8cbdcffdac05a31a6ad1759e0d7f4cdcd",
+      "llvm/lib/CodeGen/MachineRegisterInfo.cpp": "eb3764a53662482d575f123704e4767575ba2accc01f7a48a9ca56c81fcb6fd4",
+      "llvm/lib/IR/Dominators.cpp": "4608f0f57402e35ea039f38807772024899f4a3315586503ee2c8624a3400c37",
+      "llvm/lib/CodeGen/LiveIntervals.cpp": "6ef5ffe8358a745110be633360c52b6cbfcbb0d70df75f1b3b8277979fa39748"
+    },
+    "patched_header_sources": {
+      "llvm/include/llvm/CodeGen/MachineRegisterInfo.h": "8b57714889c47609546bc9c8714be3f428f4599dfb7a48f095c4ba318f4b9d1f",
+      "llvm/include/llvm/CodeGen/LiveInterval.h": "ba6b3ba6cf38f3cbded35284fb6d22cdfc7d1ef7238ec812e6b103ec4be95d89"
+    },
+    "patched_build_support_sources": {
+      "llvm/utils/extract_symbols.py": "26309ae8758eb825dc598cdda8b5a8e343196c1dc56f5571e122725d042e738c"
+    },
+    "source_urls": {
+      "llvm/lib/CodeGen/MachineRegisterInfo.cpp": "https://raw.githubusercontent.com/llvm/llvm-project/a17069fea5b271c6824ea773874b007116de9644/llvm/lib/CodeGen/MachineRegisterInfo.cpp",
+      "llvm/include/llvm/CodeGen/MachineRegisterInfo.h": "https://raw.githubusercontent.com/llvm/llvm-project/a17069fea5b271c6824ea773874b007116de9644/llvm/include/llvm/CodeGen/MachineRegisterInfo.h",
+      "llvm/lib/CodeGen/ScheduleDAG.cpp": "https://raw.githubusercontent.com/llvm/llvm-project/a17069fea5b271c6824ea773874b007116de9644/llvm/lib/CodeGen/ScheduleDAG.cpp",
+      "llvm/lib/IR/Dominators.cpp": "https://raw.githubusercontent.com/llvm/llvm-project/a17069fea5b271c6824ea773874b007116de9644/llvm/lib/IR/Dominators.cpp",
+      "llvm/lib/CodeGen/LiveIntervals.cpp": "https://raw.githubusercontent.com/llvm/llvm-project/a17069fea5b271c6824ea773874b007116de9644/llvm/lib/CodeGen/LiveIntervals.cpp",
+      "llvm/utils/extract_symbols.py": "https://raw.githubusercontent.com/llvm/llvm-project/a17069fea5b271c6824ea773874b007116de9644/llvm/utils/extract_symbols.py",
+      "llvm/include/llvm/CodeGen/LiveInterval.h": "https://raw.githubusercontent.com/llvm/llvm-project/a17069fea5b271c6824ea773874b007116de9644/llvm/include/llvm/CodeGen/LiveInterval.h"
+    }
+  },
+  "historical_recipe_scope": "The historical_full_source_*_0001_0010 objects describe only the previously qualified 0001--0010 sources/tools/profiles and stage timings; none qualify the new 0011--0013 series. Legacy overlay recipe objects remain unchanged and apply only 0001--0007.",
+  "proposal_provenance_0011_0013": {
+    "baseline_manifest": {
+      "path": "/tmp/arcilator-llvm-prune/baseline-port/compiler/llvm-patches/manifest.json",
+      "sha256": "bcefcc0a4570997d5005d1ca3372f096bb4cdf51e0eb1d9416abddc0c48465ec"
+    },
+    "baseline_README": {
+      "path": "/tmp/arcilator-llvm-prune/baseline-port/compiler/llvm-patches/README.md",
+      "sha256": "e177080256b7de6b341233107c7858a54b59c46d44a2c58df18f063af989f410"
+    },
+    "private_source_package": {
+      "path": "/tmp/arcilator-llvm-prune/package/manifest.json",
+      "sha256": "ea69ffb1e0a7ed105fc3e7806dbdbf9f1ab08bed8a99bc99b9986472e7f0f892"
+    },
+    "first_stage_selection": {
+      "path": "/tmp/arcilator-llvm-prune/first-stage-selection.json",
+      "sha256": "d0fd708b7285809664627b417246925b9f6719cc99a9f5d21e7b8e453fbeda51"
+    },
+    "payload_scope": "Three LLVM patches plus manifest/README updates. No tests, artifact cache, simulator/runtime/configuration/binary specialization or Arcilator/CIRCT source changes."
+  }
+}

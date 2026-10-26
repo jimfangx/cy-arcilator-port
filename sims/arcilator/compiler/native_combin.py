@@ -14,10 +14,11 @@ INTERFACES = {
     'ClockSignalNor2': ({'clockIn', 'signalIn'}, 'clockOut'),
     'EICG_wrapper': ({'in', 'en', 'test_en'}, 'out')
 }
+NAMESPACE_PREFIX = '%arc_native_glue'
 
 
 def lower_native_combin(lines, externs, reserved):
-    namespace = '%arc_native_glue'
+    namespace = NAMESPACE_PREFIX
     while any(value.startswith(namespace) for value in reserved):
         namespace += '_'
     latch = '__ArcNativeClockGateLatch'

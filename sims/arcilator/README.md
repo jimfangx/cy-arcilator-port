@@ -15,6 +15,30 @@ source edits rebuild the affected objects, model-only changes relink, and
 unchanged builds reuse objects. The standalone `native_build.py` one-shot
 compile/link interface remains available.
 
+`ARC_MLIR_BYTECODE=1` (the default) writes the partition-to-model handoff as
+MLIR bytecode, retaining the `model.mlir` artifact name. The compiler accepts
+this encoding directly. Use the matching `circt-opt model.mlir` to print it,
+or set `ARC_MLIR_BYTECODE=0` to generate text. The encoding participates in
+the existing build settings so changing it refreshes the grouped partition
+outputs. This changes serialization without skipping compiler passes.
+
+`ARC_FUSED_PIPELINE=1` (the default) runs array normalization, optional model outlining,
+and LLVM lowering in one `circt-opt` process with the same pass order and
+options. Arc optimization and state allocation keep separate process contexts.
+Set it to `0` to retain individual stages for debugging. This option uses
+the installed SDK's existing passes.
+
+`ARC_CONVERSION_BYTECODE=1` also uses bytecode for the Arc conversion handoff.
+It requires the matching Arcilator driver extension and defaults to `0` for
+the stock SDK. The [driver build instructions](compiler/arcilator-driver/README.md)
+describe the private build; keep the SDK compiler, headers, and runtime aligned.
+
+Private, same-revision LLVM compiler builds can be evaluated with `LLVM_OPT`
+and `LLC` overrides while retaining the installed SDK for `CIRCT_BIN` and
+`CIRCT_ROOT`. See [compiler/TOOLCHAIN.md](compiler/TOOLCHAIN.md) and the
+[LLVM compiler patches](compiler/llvm-patches/README.md). These tools optimize
+compiler execution; simulator inputs and optimization settings remain explicit.
+
 Native416 checks this build graph on the original full Rocket/Shuttle release
 models and all ten original foreign drivers per model. With 16 available CPUs,
 warm compiler/library dependencies and fresh SV, models and objects, complete
@@ -43,48 +67,60 @@ and retained experimental results are in
 
 ## Experimental state-aware partitioning
 
-`ARC_STATE_PARTITIONING=1` enables an experimental two-stage model pass. It
-records explicit state-object identities before allocation, then checks exact
-storage ranges, intervening writes and opaque effects before outlining pure
-regions after allocation. An old state value is passed as a snapshot whenever
-the compiler cannot prove that reloading it at the helper call observes the
-same version. Array aliases, unknown effects and unsupported boundaries retain
-their original handling. State allocation order, physical layout, clocks and
-foreign callbacks remain in the model.
+`ARC_STATE_PARTITIONING=1` enables state-aware model scheduling and outlining
+before LLVM flattening. The first pass records state-object provenance before
+allocation. The second constructs a dependence graph for each supported effect
+epoch using SSA dependencies and exact physical-state read-after-write,
+write-after-read and write-after-write dependencies. A deterministic scheduler
+co-locates producers and consumers while preserving these edges. Calls, unknown
+aliases, array references, storage lifetimes and unsupported control/effects
+form barriers. Supported conditional bodies keep their predicates.
+
+A costed prefix selector chooses legal low-interface cuts within bounded
+windows, rather than always cutting at a fixed operation count. Admission must
+improve the estimated partition/interface/frontier costs without worsening the
+other limits. Epochs without admissible partitions retain their original order.
+After scheduling, the pass rebuilds dominance and state-version information.
+An old state value crosses the helper boundary as a snapshot unless reloading
+it at that boundary is proven to observe the same physical range and version.
+Allocation order, physical layout, clocks and foreign callback order remain
+part of the original model.
 
 The setting defaults to `0` and participates in model and codegen cache keys.
-Enabled builds write `state-partition-report.json` and
-`state-partition-report.plan.json` beside the model. With
-`ARC_CODEGEN_PIPELINE=stock`, the setting also permits independent optimized
-functions to compile concurrently, without adding bounded-CFG transformations.
-Whole-module LLVM optimization still precedes this backend partitioning.
+Enabled builds write `state-partition-report.json` (schema 2) and
+`state-partition-report.plan.json` beside the model. Reports include dependency
+edges, accepted/rejected scheduling decisions, selected cut costs, interface
+sizes, helper counts and original operation ordinals.
 
-This is an implementation under qualification, not a demonstrated build-time
-or runtime improvement across configurations. Unsupported regions remain
-unsplit. Keep the default setting for qualified performance results until a
-complete build and runtime comparison establishes a useful improvement.
+With `ARC_CODEGEN_PIPELINE=stock` and more than one build job, enabled builds
+split independent LLVM definitions before optimization and use the matching
+SDK's ThinLTO summary/import pipeline to optimize and generate code in
+parallel. This retains LLVM's cross-module analysis. Optimizer/target options
+also reach the final worker pipeline; the SDK resolves the host CPU alias.
+CIRCT's redundant integer-alignment rules are removed only after proving ABI
+and preferred alignment unchanged, then the complete LLVM layout must equal
+the target layout before its canonical spelling is used. Native ABI/storage/vector
+passes run after the final optimizer. Original private symbol bindings are
+restored after relocatable linking. Unsupported symbol resolutions, assembly,
+targets or missing matching tools fall back to the ordinary whole-module
+optimizer. `codegen-report.json` records the strategy, fallback reason and
+stage timings. On the ThinLTO path, `model.bc` is the verified pre-partition
+seed; the report identifies this explicitly. `ARC_BUILD_JOBS=1` keeps serial
+whole-module optimization. Simulation execution remains single-threaded.
 
-The first Rocket implementation creates two helpers containing 614 operations.
-One helper co-locates 535 operations and two scalar state writes behind six
-input words. Independent O0/O3 tests cover old/new versions, derived clocks,
-opaque callback mutations, array/partial aliases, and conditional void writers.
-Removing either the actual write-version or opaque-effect guard is detected.
-Run these fixtures with `make native-state-partition-test` using the matching
-CIRCT SDK.
+Run `make native-state-partition-test` with the matching CIRCT SDK. Independent
+O0/O3 oracles cover full state bytes, old/new versions, derived clocks, opaque
+callback mutations, array/partial aliases and conditional writers. The suite
+also removes actual dependency/version/epoch guards to check that the oracles
+detect errors. Cycle, cancellation, malformed-certificate and no-admissible-cut
+fallbacks preserve their required semantics. LLVM tests cover public mutable
+globals, private bindings, supported ThinLTO execution, ordinary fallback and
+preservation of existing outputs after a failed backend.
 
-The current Rocket pilot preserves the complete model metadata, current/staged
-state bytes, original program logs/cycles and ten SDK/model/binding counters on
-Dhrystone and Towers. Balanced runtime checks with both existing and fresh
-matched host objects found no regression. One fresh complete-build pair with
-16 CPUs and warm dependencies took 58.00 seconds with the setting off and
-57.38 seconds with it on; this small single-pair difference is not a robust
-compile-time speedup claim. The pilot uses stock O3, no generic model outlining,
-no shared-procedure/large-ABI buffer transforms, and native host CPU targeting.
+Keep this opt-in until complete matched build/runtime measurements establish
+its value for the intended configuration. Scalar Dhrystone and Towers runs do
+not qualify vector instruction execution on Saturn or every possible model.
 
-This stage preserves operation order within contiguous proven scalar-state
-regions. It does not yet implement global producer co-location, scheduling
-across state overwrites, or a solution to the remaining dominant evaluator's
-compile-time concentration.
 
 ## Native callback schedules
 
@@ -241,12 +277,13 @@ successful compilation.
 `ARC_BUILD_JOBS` defaults to the available CPU count and controls LLVM machine
 code generation, host C/C++ compilation, and the patched Verilog frontend build.
 Set it explicitly to limit concurrency when memory is constrained. LLVM keeps
-whole-model optimization, then balances independent functions across compiler
-processes and combines their objects. `ARC_BUILD_JOBS=1` uses the original serial
-pipeline. `codegen-report.json` records stage timings and partition costs; a
-single dominant function can limit parallelism. Parallel builds retain the
-whole optimized module in `model.bc` and add instruction-selection boundaries
-separately in each partition. Module or inline assembly and
+whole-model optimization by default, then balances independent functions across
+compiler processes and combines their objects. State-aware stock builds use
+parallel ThinLTO optimization as described above. `ARC_BUILD_JOBS=1` uses the
+original serial pipeline. `codegen-report.json` records stage timings and partition costs; a
+single dominant function can limit parallelism. Ordinary parallel builds retain
+the whole optimized module in `model.bc` and add instruction-selection boundaries
+separately in each partition; state-aware ThinLTO builds retain the verified seed. Module or inline assembly and
 non-ELF targets use one code generator. This setting does not parallelize the
 simulation evaluator.
 `ARC_ABI_BUFFERS` defaults to 1 and controls the private large-argument and
@@ -267,6 +304,26 @@ instruction-selection boundaries and parallel model partitioning. The requested
 `ARC_BUILD_JOBS` still controls host and frontend compilation; the codegen report
 records both requested and actual jobs. Both options participate in build cache
 invalidation.
+
+`ARC_SPARSE_PREPARATION=1` bulk-copies unchanged canonical hardware text while
+retaining the existing semantic rewriters for clocks, memories, callbacks, and
+foreign instances. Inputs with unsupported newline or range layouts use the
+ordinary reader. This changes compiler preparation, not the generated runtime.
+
+`ARC_NATIVE_PREPARATION=1` prepares the owned wide-arithmetic ABI and private
+procedure ABIs with a typed LLVM pass and passes binary IR to optimization.
+Preparation and O3 use separate LLVM contexts, preserving the original early
+inlining context and discarding its transient compiler state. The temporary
+binary handoff is rebuilt for every model compilation and removed afterward.
+`ARC_EARLY_INLINE`, `ARC_SHARED_PROCEDURES`, and `ARC_ABI_BUFFERS` keep their
+existing roles. In this mode, `model.ll` contains LLVM before arithmetic
+preparation and `model.bc` contains the optimized, prepared model. State
+partitioning must be disabled.
+
+`ARC_LLC_FLAGS` passes additional options to the selected LLVM backend and is
+tracked in code-generation settings. Compiler-specific worker options require
+a backend that implements them; `ARC_BUILD_JOBS` alone cannot parallelize a
+single dominant LLVM function in the stock compiler.
 
 `ARC_LATE_WIDE_ARITHMETIC` defaults to 1. Proven-pure generated wide shifts
 remain typed CIRCT arithmetic through Arc optimization, and surviving shifts

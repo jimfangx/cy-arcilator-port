@@ -48,7 +48,7 @@ def lower(args):
         source.write_text(text)
         print(f'Normalized {repaired} synchronous memory mode separators; '
               f'removed {enums} enum metadata annotations', flush=True)
-    if re.search(r'^\s*(?:input|output|wire) [^\n]*\bAnalog(?:<|\s|$)', text, re.M):
+    if 'Analog' in text and re.search(r'^\s*(?:input|output|wire) [^\n]*\bAnalog(?:<|\s|$)', text, re.M):
         # Flatten before naming physical nets: attach edges through hierarchy
         # become one net joining the actual foreign-module pins.
         annotation = output.parent / 'flatten-analog.anno.json'

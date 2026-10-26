@@ -1,0 +1,30 @@
+--- a/llvm/lib/CodeGen/LiveInterval.cpp
++++ b/llvm/lib/CodeGen/LiveInterval.cpp
+@@ -803,6 +803,13 @@
+   ArrayRef<SlotIndex>::iterator SlotE = Slots.end();
+ 
+   // If there are no regmask slots, we have nothing to search.
++  if (SlotI == SlotE || empty())
++    return false;
++
++  // Slots are sorted. No slot before the first segment can intersect this
++  // live range; skip that prefix rather than visiting every earlier slot.
++  if (*SlotI < begin()->start)
++    SlotI = std::lower_bound(SlotI, SlotE, begin()->start);
+   if (SlotI == SlotE)
+     return false;
+ 
+--- a/llvm/include/llvm/CodeGen/LiveInterval.h
++++ b/llvm/include/llvm/CodeGen/LiveInterval.h
+@@ -611,8 +611,9 @@
+     }
+ 
+     // Returns true if any segment in the live range contains any of the
+-    // provided slot indexes.  Slots which occur in holes between
+-    // segments will not cause the function to return true.
++    // provided slot indexes. Slots must be sorted in non-decreasing order.
++    // Slots which occur in holes between segments will not cause the function
++    // to return true.
+     LLVM_ABI bool isLiveAtIndexes(ArrayRef<SlotIndex> Slots) const;
+ 
+     bool operator<(const LiveRange& other) const {

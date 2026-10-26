@@ -1,0 +1,71 @@
+--- a/llvm/lib/CodeGen/LiveIntervalCalc.cpp
++++ b/llvm/lib/CodeGen/LiveIntervalCalc.cpp
+@@ -50,34 +50,42 @@
+   // createDeadDef() will deduplicate.
+   const TargetRegisterInfo &TRI = *MRI->getTargetRegisterInfo();
+   Register Reg = LI.reg();
+-  for (const MachineOperand &MO : MRI->reg_nodbg_operands(Reg)) {
+-    if (!MO.isDef() && !MO.readsReg())
+-      continue;
+-
+-    unsigned SubReg = MO.getSubReg();
+-    if (LI.hasSubRanges() || (SubReg != 0 && TrackSubRegs)) {
+-      LaneBitmask SubMask = SubReg != 0 ? TRI.getSubRegIndexLaneMask(SubReg)
+-                                        : MRI->getMaxLaneMaskForVReg(Reg);
+-      // If this is the first time we see a subregister def, initialize
+-      // subranges by creating a copy of the main range.
+-      if (!LI.hasSubRanges() && !LI.empty()) {
+-        LaneBitmask ClassMask = MRI->getMaxLaneMaskForVReg(Reg);
+-        LI.createSubRangeFrom(*Alloc, ClassMask, LI);
++  // Without subregister liveness, uses cannot create or refine a subrange.
++  // Definitions precede uses on the MRI chain, and def_operands stops at the
++  // first use. Keep their original order while avoiding a second use traversal.
++  if (!TrackSubRegs && !LI.hasSubRanges()) {
++    for (const MachineOperand &MO : MRI->def_operands(Reg))
++      createDeadDef(*Indexes, *Alloc, LI, MO);
++  } else {
++    for (const MachineOperand &MO : MRI->reg_nodbg_operands(Reg)) {
++      if (!MO.isDef() && !MO.readsReg())
++        continue;
++
++      unsigned SubReg = MO.getSubReg();
++      if (LI.hasSubRanges() || (SubReg != 0 && TrackSubRegs)) {
++        LaneBitmask SubMask = SubReg != 0 ? TRI.getSubRegIndexLaneMask(SubReg)
++                                          : MRI->getMaxLaneMaskForVReg(Reg);
++        // If this is the first time we see a subregister def, initialize
++        // subranges by creating a copy of the main range.
++        if (!LI.hasSubRanges() && !LI.empty()) {
++          LaneBitmask ClassMask = MRI->getMaxLaneMaskForVReg(Reg);
++          LI.createSubRangeFrom(*Alloc, ClassMask, LI);
++        }
++
++        LI.refineSubRanges(
++            *Alloc, SubMask,
++            [&MO, Indexes, Alloc](LiveInterval::SubRange &SR) {
++              if (MO.isDef())
++                createDeadDef(*Indexes, *Alloc, SR, MO);
++            },
++            *Indexes, TRI);
+       }
+ 
+-      LI.refineSubRanges(
+-          *Alloc, SubMask,
+-          [&MO, Indexes, Alloc](LiveInterval::SubRange &SR) {
+-            if (MO.isDef())
+-              createDeadDef(*Indexes, *Alloc, SR, MO);
+-          },
+-          *Indexes, TRI);
+-    }
+-
+-    // Create the def in the main liverange. We do not have to do this if
+-    // subranges are tracked as we recreate the main range later in this case.
+-    if (MO.isDef() && !LI.hasSubRanges())
+-      createDeadDef(*Indexes, *Alloc, LI, MO);
++      // Create the def in the main liverange. We do not have to do this if
++      // subranges are tracked as we recreate the main range later in this case.
++      if (MO.isDef() && !LI.hasSubRanges())
++        createDeadDef(*Indexes, *Alloc, LI, MO);
++    }
+   }
+ 
+   // We may have created empty live ranges for partially undefined uses, we
