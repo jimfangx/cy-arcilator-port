@@ -39,6 +39,71 @@ and `LLC` overrides while retaining the installed SDK for `CIRCT_BIN` and
 [LLVM compiler patches](compiler/llvm-patches/README.md). These tools optimize
 compiler execution; simulator inputs and optimization settings remain explicit.
 
+### Reproduce the optimized toolchain from this branch
+
+From the Chipyard root on each machine:
+
+```bash
+source env.sh
+./sims/arcilator/build-toolchain.sh --jobs "$(nproc)"
+source sims/arcilator/generated-src/toolchain/env.sh
+make -C sims/arcilator -j"$(nproc)" CONFIG=RocketConfig
+```
+
+This builds the compiler tools locally from pinned source and the checked-in
+LLVM patch series. It builds the optional bytecode driver using its existing
+pinned source patch, generates fresh native model inputs with the installed SDK,
+builds instrumented LLVM, trains fresh filtered frontend profiles, and builds
+ThinLTO/PGO `opt` and `llc`. All configured model objects and canonical LLVM IR
+must match the locally generated SDK references. A fresh production plugin/API
+check must also pass before `env.sh` is published. No earlier experiment output,
+binary bundle, model result or profile is an input to this workflow.
+
+The default data recipe, [compiler/toolchain-configs.json](compiler/toolchain-configs.json),
+trains on Rocket/BOOM/Shuttle and holds Saturn out of training. Pass `--configs`
+with another explicit recipe to change the model set. Per-case options, including
+Shuttle's existing wide-store/vector-packing/lookup-table controls, are data in
+that file. These affect the generated models; profile training itself only runs
+compiler programs.
+
+The source build needs the pinned `firtool-1.162.0` SDK exposed by `env.sh`,
+Clang18/Clang++18, LLD18, llvm-profdata18, the matching Clang profile runtime,
+CMake, Ninja, Git and normal LLVM build dependencies, including Z3 development
+headers/library when enabled by the SDK. The Chipyard setup's CIRCT step installs
+the required SDK; an environment still finding an older CIRCT needs that step
+rerun. `--sdk` is an optional override. Use `--cc`, `--cxx`, `--linker` and
+`--profdata` for host tools outside PATH. `--host-cc` and `--host-cxx` select the
+ordinary native/plugin compilers separately. Check prerequisites without building:
+
+```bash
+python3 sims/arcilator/compiler/toolchain.py check
+```
+
+`--work /path/to/fresh-directory` selects another work area. The default is
+`sims/arcilator/generated-src/toolchain`, which is ignored by Git. Failed logs
+and stage records are retained. Explicit `--resume` resumes the same unfinished
+construction with identical sources/tools/flags; completed setups are immutable.
+Use the generated `env.sh` in subsequent shells after Chipyard's `env.sh`.
+`--jobs` controls compilation concurrency, `--lto-jobs` fixes ThinLTO workers,
+`--link-jobs` defaults to one, and `--training-jobs` controls concurrent model
+compiler cases. This setup can consume substantial memory and disk space.
+
+Activation selects the qualified common stock-O3/native preparation settings,
+four liveness workers and host CPU targeting. It disables state partitioning,
+model outlining, shared procedures and ABI buffers. Wide-store distribution and
+vector packing default to zero and Arcilator flags to empty; explicit Make
+arguments override the environment. To reproduce the Shuttle recipe, additionally
+pass `ARC_DISTRIBUTE_WIDE_STORES=1 ARC_VECTOR_PACKING=1
+ARCILATOR_FLAGS=--lookup-tables=false`.
+
+All source pins, patches, configuration data and setup code are versioned.
+Generated references, profiles, tools and activation paths are local to each
+machine. The command reproduces the construction recipe and checks model-code
+preservation; it does not promise identical tool binary bytes across build paths
+or the same performance on another host. See
+[compiler/FULL_TOOLCHAIN.md](compiler/FULL_TOOLCHAIN.md) for construction guards
+and the lower-level interfaces.
+
 Native416 checks this build graph on the original full Rocket/Shuttle release
 models and all ten original foreign drivers per model. With 16 available CPUs,
 warm compiler/library dependencies and fresh SV, models and objects, complete

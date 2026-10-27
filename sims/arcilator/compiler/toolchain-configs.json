@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "cases": [
+    {"config": "RocketConfig", "training": true, "settings": {}},
+    {"config": "MegaBoomV3Config", "training": true, "settings": {}},
+    {"config": "REFV256D128RocketConfig", "training": false, "settings": {}},
+    {
+      "config": "ShuttleConfig",
+      "training": true,
+      "settings": {
+        "ARCILATOR_FLAGS": "--lookup-tables=false",
+        "ARC_DISTRIBUTE_WIDE_STORES": "1",
+        "ARC_VECTOR_PACKING": "1"
+      }
+    }
+  ]
+}

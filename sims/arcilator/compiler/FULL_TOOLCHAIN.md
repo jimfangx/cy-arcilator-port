@@ -2,6 +2,16 @@
 
 `full_toolchain.py` constructs complete private `opt` and `llc` executables from an explicitly qualified LLVM source/SDK pair. It supports Release controls, fresh Frontend or IR profile generation, profile-guided reconstruction, and optional ThinLTO. It does not change Arcilator/CIRCT sources, simulator functions, model optimization flags or the installed SDK. Construction alone does not establish correctness or a performance improvement.
 
+The checked-in entry point `./sims/arcilator/build-toolchain.sh`, run after
+Chipyard's `env.sh`, orchestrates the complete source-based recipe. It fetches
+pinned sources, verifies and applies the patch series, generates local model
+references, builds and trains fresh instrumented compilers, reconstructs the
+ThinLTO/PGO tools, and qualifies all model outputs plus the production plugin API
+before writing an activation script. Its data recipe is `toolchain-configs.json`.
+See [the reproducible setup command](../README.md#reproduce-the-optimized-toolchain-from-this-branch)
+for prerequisites, overrides and resume behavior. The lower-level interfaces
+below remain available for explicit experiments.
+
 The selected experimental policy is **Frontend profiling, atomic counter updates, and the exact `frontend-implementation.profile-list` file**. Its generic header/include exclusions reduce instrumentation overhead while retaining implementation definitions, including methods defined in `.cpp` files and declared in headers. The policy is not complete coverage of all compiler code. Filtered IR profiling was rejected after a real mismatch; do not substitute IR profiles for Frontend profiles.
 
 ## Prerequisites and source qualification
