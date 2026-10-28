@@ -109,6 +109,20 @@ and unexpected warnings still do. See [the construction diagnostic
 policy](compiler/FULL_TOOLCHAIN.md#fresh-construction-training-and-qualification).
 
 Use the generated `env.sh` in subsequent shells after Chipyard's `env.sh`.
+The activation script supports Bash and Zsh. To repair a completed setup whose
+older activation script incorrectly looks for `toolchain.py` in the current
+directory, update this branch and regenerate only that script:
+
+```bash
+python3 sims/arcilator/compiler/toolchain.py env \
+  --work sims/arcilator/generated-src/toolchain --write-script
+source sims/arcilator/generated-src/toolchain/env.sh
+```
+
+Use the original `--work` path if different. This checks the completed setup's
+artifacts and qualification records before writing `env.sh`; it does not rebuild
+the compilers or change their recorded construction identity.
+
 `--jobs` controls compilation concurrency, `--lto-jobs` fixes ThinLTO workers,
 `--link-jobs` defaults to one, and `--training-jobs` controls concurrent model
 compiler cases. This setup can consume substantial memory and disk space.
