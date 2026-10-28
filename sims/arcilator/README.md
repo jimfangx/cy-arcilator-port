@@ -83,6 +83,31 @@ python3 sims/arcilator/compiler/toolchain.py check
 `sims/arcilator/generated-src/toolchain`, which is ignored by Git. Failed logs
 and stage records are retained. Explicit `--resume` resumes the same unfinished
 construction with identical sources/tools/flags; completed setups are immutable.
+
+If the generated configuration audit reports `LLVM_ENABLE_ZLIB` as SDK `1` and
+candidate `0`, CMake could not find or link zlib. Install its development package
+and expose the active environment to CMake before retrying:
+
+```bash
+conda install -c conda-forge zlib
+export CMAKE_PREFIX_PATH="$CONDA_PREFIX${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"
+rm -f -- sims/arcilator/generated-src/toolchain/instrument/build/CMakeCache.txt
+./sims/arcilator/build-toolchain.sh --resume --jobs "$(nproc)"
+```
+
+Clearing the instrumented build's CMake cache also clears any failed zlib probe
+retained from before the dependency was installed. Adjust that path if using a
+custom `--work` directory. Keep the original build arguments when resuming.
+If the checked-in construction scripts changed, use a fresh work directory
+instead. The constructor requires
+zlib when the SDK enables it, so a missing dependency fails during CMake
+configuration rather than silently producing incompatible headers.
+
+ThinLTO's exact missed-loop-unrolling warning is visible and recorded in
+`profile-warning-audit.json`. It does not reject construction; profile mismatch
+and unexpected warnings still do. See [the construction diagnostic
+policy](compiler/FULL_TOOLCHAIN.md#fresh-construction-training-and-qualification).
+
 Use the generated `env.sh` in subsequent shells after Chipyard's `env.sh`.
 `--jobs` controls compilation concurrency, `--lto-jobs` fixes ThinLTO workers,
 `--link-jobs` defaults to one, and `--training-jobs` controls concurrent model

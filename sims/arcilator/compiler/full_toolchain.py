@@ -386,10 +386,23 @@ def audit_profile_warnings(work, mode, policy):
     for line in log.read_text(errors='replace').splitlines():
         if 'warning:' not in line:
             continue
-        allowed = mode == 'pgo' and policy['unprofiled_missing_file'] == 'warning' and '[-Wprofile-instr-unprofiled]' in line
+        unprofiled = (mode == 'pgo' and policy['unprofiled_missing_file'] == 'warning'
+                      and '[-Wprofile-instr-unprofiled]' in line)
+        # LLD does not implement Clang's -Wno-pass-failed. Keep this exact
+        # missed transformation visible; profile and unknown warnings still
+        # reject publication in the audit below.
+        plain = re.sub(r'\x1b\[[0-9;]*m', '', line)
+        missed_unroll = (mode == 'pgo' and policy.get('lto_missed_loop_unroll') == 'warning'
+                         and re.fullmatch(
+                             r'(?:.*[/\\])?ld\.lld(?:-\d+)?: warning: (?:.*?:\d+:\d+: )?'
+                             r'loop not unrolled: the optimizer was unable to perform the requested '
+                             r'transformation; the transformation might be disabled or specified as part '
+                             r'of an unsupported transformation ordering', plain) is not None)
+        allowed = unprofiled or missed_unroll
         match = re.search(r"no profile data available for file\s*:?\s*['\"]([^'\"]+)", line)
         source_name = match[1] if match else None
-        warnings.append(dict(source=source_name, diagnostic='profile-instr-unprofiled' if allowed else 'other',
+        diagnostic = 'profile-instr-unprofiled' if unprofiled else 'lto-missed-loop-unroll' if missed_unroll else 'other'
+        warnings.append(dict(source=source_name, diagnostic=diagnostic,
                              visible_line=line, permitted=allowed))
     counts = {}
     for warning in warnings:
@@ -447,6 +460,7 @@ def build_stage(args):
     common_fingerprint = fingerprint(identity)
     consumer_diagnostics = dict(applies_to='pgo-consumer-only',
         unprofiled_missing_file=args.unprofiled_warning,
+        lto_missed_loop_unroll='warning' if args.lto == 'thin' else 'fatal',
         hash_out_of_date_COMDAT_and_other_warnings='fatal', warnings_suppressed=False)
     # Never replace a prior stage's immutable publication or changed recipe.
     if work.exists():
@@ -495,7 +509,7 @@ def build_stage(args):
         linker_flags += ' -Wl,--thinlto-jobs=' + str(identity['lto_backend_jobs'])
         if args.mode == 'pgo':
             linker_flags += (' -Wl,-mllvm,-no-pgo-warn-mismatch=false'
-                             ' -Wl,-mllvm,-no-pgo-warn-mismatch-comdat-weak=false -Wl,--fatal-warnings')
+                             ' -Wl,-mllvm,-no-pgo-warn-mismatch-comdat-weak=false -Wl,--no-fatal-warnings')
     cpp = ' '.join(shlex.quote(token) for token in cpp_tokens)
     boolean = lambda value: 'ON' if value else 'OFF'
     macros, abi = sdk['macros'], sdk['abi']
@@ -517,7 +531,7 @@ def build_stage(args):
                  LLVM_ENABLE_Z3_SOLVER=boolean(sdk['z3']), LLVM_ENABLE_LIBEDIT=boolean(sdk['libedit']),
                  LLVM_FORCE_ENABLE_STATS=boolean(macros['LLVM_FORCE_ENABLE_STATS'] == '1'),
                  LLVM_ENABLE_LZMA=boolean(macros['LLVM_ENABLE_LZMA'] == '1'),
-                 LLVM_ENABLE_ZLIB=boolean(macros['LLVM_ENABLE_ZLIB'] == '1'),
+                 LLVM_ENABLE_ZLIB='FORCE_ON' if macros['LLVM_ENABLE_ZLIB'] == '1' else 'OFF',
                  LLVM_ENABLE_ZSTD=boolean(macros['LLVM_ENABLE_ZSTD'] == '1'),
                  LLVM_ENABLE_LIBXML2=boolean(sdk['libxml2']),
                  LLVM_EXPORT_SYMBOLS_FOR_PLUGINS='ON', LLVM_BUILD_LLVM_DYLIB='OFF',
@@ -616,7 +630,7 @@ def build_stage(args):
                     'Visible nonfatal missing-file policy is absent from actual PGO commands')
         if args.lto == 'thin':
             links = [line for line in commands.splitlines() if '-o bin/opt ' in line or '-o bin/llc ' in line]
-            require(len(links) == 2 and all('--fatal-warnings' in line and
+            require(len(links) == 2 and all('--no-fatal-warnings' in line and '--fatal-warnings' not in line and
                         '-no-pgo-warn-mismatch-comdat-weak=false' in line for line in links),
                     'Strict diagnostics are missing from LTO backend commands')
     guard()

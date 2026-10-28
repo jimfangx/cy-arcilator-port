@@ -107,6 +107,17 @@ Training sets a unique `%p-%m` raw-profile destination for every declared case/s
 
 Every PGO C/C++ compile retains `-Werror`, explicit hash/out-of-date and weak-COMDAT mismatch diagnostics. The selected **consumer-only** policy adds exactly `-Wno-error=profile-instr-unprofiled`: expected missing-file coverage warnings remain visible and counted in `profile-warning-audit.json`, including on failed construction. It does not suppress diagnostics or relax stale/hash/COMDAT errors. Consumer severity is separately recorded from profile generation identity. `--unprofiled-warning error` restores fully fatal missing-file coverage. Assembly-only commands are classified as nonconsumers; requiring C++ profile-use flags on `.S` commands is invalid.
 
+ThinLTO links keep warnings visible with `--no-fatal-warnings`; LLD does not
+apply Clang's `-Wno-pass-failed` policy. The post-build audit permits only the
+exact `loop not unrolled: the optimizer was unable to perform the requested
+transformation` diagnostic (including its full standard explanation), alongside
+the declared missing-file coverage policy. It records this as
+`lto-missed-loop-unroll`. Profile mismatch and all other warnings reject
+publication after linking, and both explicit backend mismatch flags remain
+enabled. This diagnostic policy does not alter optimization settings. A script
+change requires fresh construction under the existing source/producer identity
+guards; an older unfinished setup cannot resume with the changed helper.
+
 ## Opaque compiler case manifests
 
 The helper has no core, generated-symbol or workload rules. The caller supplies exact pipelines, target flags, plugins and known outputs. Every input/plugin/reference needs an absolute path and SHA256. Independent cases can run concurrently; steps within a case run serially in that case's fresh directory.

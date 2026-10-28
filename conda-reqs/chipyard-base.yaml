@@ -29,6 +29,7 @@ dependencies:
     - git
     - ninja # needed in case we need to built circt from scratch
     - libz3>=4,<5 # native solver library required by the CIRCT SDK
+    - zlib # development headers/library required when reconstructing LLVM
     - libnuma # added to prevent libnuma.so.1 not found err on systems without it
     - numactl # same as above
 
