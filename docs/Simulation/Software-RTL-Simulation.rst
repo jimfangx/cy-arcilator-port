@@ -24,6 +24,12 @@ The standard Chipyard setup installs the matching full CIRCT
 firtool-1.162.0 suite with its headers and libraries. Source ``env.sh`` to
 activate the environment; the backend discovers the suite on ``PATH``.
 Existing environments with older CIRCT tools must rerun setup step 10.
+On Linux x86-64, setup step 12 also constructs and qualifies the optimized
+native LLVM toolchain and arranges activation through the same ``env.sh``.
+The normal setup installs its pinned Conda dependencies and supplies their
+CMake search paths automatically. No separate toolchain build or activation
+command is needed after successful setup. ``--skip-arcilator`` skips this
+one-time optimized-toolchain construction.
 For example, from the Chipyard root:
 
 .. code-block:: shell

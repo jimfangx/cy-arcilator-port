@@ -1,0 +1,7 @@
+{
+  "graphviz": {"conda_name": "python-graphviz", "pypi_name": "graphviz"},
+  "libarchive-c": {"conda_name": "python-libarchive-c", "pypi_name": "libarchive-c"},
+  "ruamel-yaml": {"conda_name": "ruamel.yaml", "pypi_name": "ruamel-yaml"},
+  "ruamel-yaml-clib": {"conda_name": "ruamel.yaml.clib", "pypi_name": "ruamel-yaml-clib"},
+  "typing-extensions": {"conda_name": "typing_extensions", "pypi_name": "typing-extensions"}
+}

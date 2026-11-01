@@ -12,6 +12,17 @@ See [the reproducible setup command](../README.md#reproduce-the-optimized-toolch
 for prerequisites, overrides and resume behavior. The lower-level interfaces
 below remain available for explicit experiments.
 
+Chipyard's normal `build-setup.sh` invokes the `toolchain.py setup` action in
+step 12 after installing the pinned SDK and Conda dependencies. This action
+validates completed installations, resumes identical interrupted constructions,
+and preserves older work when a changed construction needs a fresh directory.
+It supplies the active Conda prefix to CMake and publishes an activation shim
+only after full output/API qualification. Chipyard's generated `env.sh` sources
+that shim. `--skip-arcilator` disables this optional optimized compiler setup;
+the ordinary SDK native flow remains available. Source-built SDKs and non-x86-64
+hosts continue to use that ordinary flow because the optimized reconstruction
+requires the reviewed prebuilt Linux x86-64 SDK.
+
 The selected experimental policy is **Frontend profiling, atomic counter updates, and the exact `frontend-implementation.profile-list` file**. Its generic header/include exclusions reduce instrumentation overhead while retaining implementation definitions, including methods defined in `.cpp` files and declared in headers. The policy is not complete coverage of all compiler code. Filtered IR profiling was rejected after a real mismatch; do not substitute IR profiles for Frontend profiles.
 
 ## Prerequisites and source qualification

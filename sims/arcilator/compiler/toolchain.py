@@ -109,6 +109,7 @@ def preflight(args):
             'Use llvm-profdata18 matching the instrumenting Clang')
     tools['host_cc'] = tool(args.host_cc or os.environ.get('CC'), ('cc',))
     tools['host_cxx'] = tool(args.host_cxx or os.environ.get('CXX'), ('c++',))
+    tools['espresso'] = tool(None, ('espresso',))
     tool(None, ('git',))
     return sdk, tools
 
@@ -299,13 +300,63 @@ def activate(args):
         print('\n'.join(exports))
 
 
-def build(args):
-    from full_toolchain import same_process
+def construction_inputs(args):
     sdk, tools = preflight(args)
     require(args.jobs > 0 and args.link_jobs > 0, 'Job counts must be positive')
     lto_jobs = args.lto_jobs or args.jobs
     case_jobs = args.training_jobs or max(1, min(3, args.jobs // 4))
     require(lto_jobs > 0 and case_jobs > 0, 'Worker counts must be positive')
+    identity = dict(sources=freeze_sources(), sdk=str(sdk),
+                    tools={k: dict(argv=str(v), **record(v)) for k, v in tools.items()},
+                    configs=record(args.configs), source=str(args.source.resolve()) if args.source else None,
+                    jobs=args.jobs, link_jobs=args.link_jobs, lto_jobs=lto_jobs, training_jobs=case_jobs)
+    return sdk, tools, lto_jobs, case_jobs, identity
+
+
+def setup(args):
+    """Install or validate the one-time toolchain without replacing prior work."""
+    prefix = os.environ.get('CONDA_PREFIX')
+    if prefix:
+        roots = [prefix, *filter(None, os.environ.get('CMAKE_PREFIX_PATH', '').split(os.pathsep))]
+        os.environ['CMAKE_PREFIX_PATH'] = os.pathsep.join(dict.fromkeys(roots))
+    *_, identity = construction_inputs(args)
+    key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:16]
+    base = args.work.absolute()
+    base.parent.mkdir(parents=True, exist_ok=True)
+    with (base.parent / (base.name + '.setup.lock')).open('w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        work = base
+        index = 0
+        while work.exists():
+            state_path = work / 'setup.json'
+            state = load(state_path) if state_path.is_file() else {}
+            if state.get('identity') == identity:
+                break
+            # Profiles and qualification records contain absolute paths. Keep
+            # older installations in place and choose a fresh construction.
+            index += 1
+            suffix = '-' + key + ('-' + str(index) if index > 1 else '')
+            work = base.with_name(base.name + suffix)
+        args.work = work
+        state_path = work / 'setup.json'
+        if not state_path.is_file() or load(state_path).get('status') != 'complete':
+            args.resume = work.exists()
+            build(args)
+        args.write_script = True
+        activate(args)
+        if args.activation:
+            activation = args.activation.absolute()
+            activation.parent.mkdir(parents=True, exist_ok=True)
+            temporary = activation.with_name(activation.name + '.new')
+            temporary.write_text('# Qualified native Arcilator toolchain.\n. ' +
+                                 shlex.quote(str(work / 'env.sh')) + '\n')
+            temporary.replace(activation)
+            print('Chipyard activation: ' + str(activation))
+
+
+def build(args):
+    from full_toolchain import same_process
+    sdk, tools, lto_jobs, case_jobs, identity = construction_inputs(args)
     work = args.work.absolute()
     existed = work.exists()
     require(not existed or args.resume, 'Use a fresh --work directory, or explicit --resume')
@@ -318,10 +369,8 @@ def build(args):
             owners = [active.get('identity'), *active.get('owned', []), *active.get('remaining_owned', [])]
             require(not any(value and same_process(value) for value in owners),
                     'Prior setup descendants are still active; retain work and stop them before resume')
-        frozen = freeze_sources()
-        identity = dict(sources=frozen, sdk=str(sdk), tools={k: dict(argv=str(v), **record(v)) for k, v in tools.items()},
-                        configs=record(args.configs), source=str(args.source.resolve()) if args.source else None,
-                        jobs=args.jobs, link_jobs=args.link_jobs, lto_jobs=lto_jobs, training_jobs=case_jobs)
+        frozen = identity['sources']
+        guard_sources(frozen)
         state_path = work / 'setup.json'
         if existed:
             state = load(state_path)
@@ -454,8 +503,9 @@ def build(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
-    for action in ('build', 'check'):
-        p = sub.add_parser(action, help='Build from source' if action == 'build' else 'Check local prerequisites')
+    for action in ('build', 'check', 'setup'):
+        p = sub.add_parser(action, help={'build': 'Build from source', 'check': 'Check local prerequisites',
+                                        'setup': 'Install, resume or validate the production toolchain'}[action])
         p.add_argument('--work', type=Path, default=DEFAULT_WORK)
         p.add_argument('--sdk', type=Path)
         p.add_argument('--source', type=Path, help='Optional pristine pinned LLVM source checkout')
@@ -465,6 +515,9 @@ def main():
         p.add_argument('--link-jobs', type=int, default=1)
         p.add_argument('--training-jobs', type=int)
         p.add_argument('--resume', action='store_true')
+        if action == 'setup':
+            p.add_argument('--activation', type=Path,
+                           help='Publish a sourceable activation file after successful qualification')
         for name in ('cc', 'cxx', 'linker', 'profdata', 'cmake', 'ninja', 'host-cc', 'host-cxx'):
             p.add_argument('--' + name, type=Path)
     p = sub.add_parser('env', help='Print exports from a completed local source build')
@@ -485,6 +538,8 @@ def main():
         elif args.action == 'check':
             sdk, tools = preflight(args)
             print(json.dumps(dict(sdk=str(sdk), tools={k: str(v) for k, v in tools.items()}), indent=2))
+        elif args.action == 'setup':
+            setup(args)
         else:
             build(args)
     except (ValueError, OSError, KeyError, subprocess.SubprocessError, KeyboardInterrupt) as error:

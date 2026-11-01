@@ -29,7 +29,7 @@ dependencies:
     - bison
     - flex
     - expat
-    - python>=3.9,<3.11
+    - python>=3.10,<3.11
     - bc
     - unzip
     - patch
@@ -59,7 +59,7 @@ dependencies:
     - expat
     - libusb1
     - ncurses
-    - cmake
+    - cmake>=3.20
     - graphviz
     - expect
 
@@ -72,8 +72,8 @@ dependencies:
     - pyelftools
 
     # clang-format for driver coding style enforcement.
-    - clang-format
-    - clang-tools
+    - clang-format=18.1.8
+    - clang-tools=18.1.8
 
     # hammer packages
     - sty

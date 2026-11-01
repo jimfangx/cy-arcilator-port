@@ -41,13 +41,45 @@ compiler execution; simulator inputs and optimization settings remain explicit.
 
 ### Reproduce the optimized toolchain from this branch
 
-From the Chipyard root on each machine:
+The normal Chipyard `./build-setup.sh riscv-tools` flow installs the LLVM 18
+host dependencies, installs the pinned CIRCT SDK, and builds, trains and qualifies
+the optimized native Arcilator toolchain in step 12. It adds activation to
+Chipyard's `env.sh`, so subsequent shells need only:
+
+```bash
+source env.sh
+make -C sims/arcilator -j"$(nproc)" CONFIG=RocketConfig
+```
+
+The setup-managed installation lives under
+`$CONDA_PREFIX/arcilator-toolchain`, with its activation shim at
+`$CONDA_PREFIX/arcilator-env.sh`. Simulator `make clean` therefore preserves the
+installed compiler tools. The standalone command below still uses the explicit
+development work directory under `sims/arcilator/generated-src`.
+
+The one-time compiler construction can take substantial time and memory. Set
+`ARC_BUILD_JOBS` when running setup to limit construction workers; the default
+uses all available CPUs. `--skip-arcilator` (or `-s 12`) skips this construction.
+It is enabled for the reviewed prebuilt Linux x86-64 SDK. Other architectures
+and `--build-circt` retain the ordinary native SDK flow without selecting an
+unqualified optimized compiler.
+
+Repeating step 12 validates a matching completed installation or resumes a
+matching interrupted construction. Changed sources, tools or options select a
+fresh suffixed work directory while retaining earlier installations and their
+logs. Activation is published only after all qualification gates pass. Setup
+automatically exposes the active Conda prefix to CMake for dependencies such as
+zlib; no manual `CMAKE_PREFIX_PATH` export or separate activation is needed.
+Step 12 also installs Chisel's Espresso logic minimizer through the existing
+Chipyard installer if step 3 has not already provided it, avoiding the costly
+Scala decoder-minimization fallback during reference generation.
+
+The standalone source command remains available for explicit experiments:
 
 ```bash
 source env.sh
 ./sims/arcilator/build-toolchain.sh --jobs "$(nproc)"
 source sims/arcilator/generated-src/toolchain/env.sh
-make -C sims/arcilator -j"$(nproc)" CONFIG=RocketConfig
 ```
 
 This builds the compiler tools locally from pinned source and the checked-in

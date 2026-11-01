@@ -28,6 +28,9 @@ fi
 # We never authenticate to a private index, so disable the keyring to avoid weird errs
 export PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring
 
+# Use Chipyard's explicit package-name exceptions; conda-lock's historical
+# regro mapping URL may disappear. All other names retain identity mapping.
+
 trap 'rm -f "${TMP_LOCKFILE:-}"' EXIT
 
 for TOOLCHAIN_TYPE in riscv-tools; do
@@ -40,6 +43,7 @@ for TOOLCHAIN_TYPE in riscv-tools; do
 
     "$CONDA_LOCK_ENV_PATH/bin/conda-lock" \
       --conda "$CONDA_EXE" \
+      --pypi_to_conda_lookup_file "$REQS_DIR/pypi-mapping.json" \
       -f "$REQS_DIR/chipyard-base.yaml" \
       -f "$REQS_DIR/chipyard-extended.yaml" \
       -f "$REQS_DIR/docs.yaml" \
@@ -54,6 +58,7 @@ for TOOLCHAIN_TYPE in riscv-tools; do
 
     "$CONDA_LOCK_ENV_PATH/bin/conda-lock" \
       --conda "$CONDA_EXE" \
+      --pypi_to_conda_lookup_file "$REQS_DIR/pypi-mapping.json" \
       -f "$REQS_DIR/chipyard-base.yaml" \
       -f "$REQS_DIR/docs.yaml" \
       -f "$REQS_DIR/$TOOLCHAIN_TYPE.yaml" \

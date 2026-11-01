@@ -87,12 +87,25 @@ Next run the following script to fully setup Chipyard with the ``riscv-tools`` t
 
     ``-s 11`` skips running repository clean-up
 
+    ``-s 12`` (or ``--skip-arcilator``) skips the optimized native Arcilator toolchain setup
+
 .. code-block:: shell
 
     ./build-setup.sh riscv-tools
 
 This script wraps around the conda environment initialization process, initializes all submodules (with the ``init-submodules-no-riscv-tools.sh`` script), installs a toolchain, and runs other setups.
 See ``./build-setup.sh --help`` for more details on what this does and how to disable parts of the setup.
+
+On Linux x86-64 with the prebuilt CIRCT SDK, step 12 builds and qualifies the
+optimized Arcilator compiler tools and adds their activation to ``env.sh``.
+The Conda lockfiles include the matching Clang 18, linker, profile tools and
+development libraries. This one-time compiler construction can take substantial
+time and memory; ``ARC_BUILD_JOBS`` controls its workers and defaults to the
+available CPUs. Repeating this step validates completed tools or resumes an
+identical interrupted construction. Source-built SDKs and other architectures
+retain the ordinary native CIRCT flow.
+The setup-managed compilers live under ``$CONDA_PREFIX/arcilator-toolchain``
+so cleaning a simulator's generated files does not remove them.
 
 .. Warning:: Using ``git`` directly will try to initialize all submodules; this is not recommended unless you expressly desire this behavior.
 
